@@ -1,5 +1,15 @@
 import os
 import asyncio
+
+# --- Python 3.12+ / 3.14 Pyrogram ইভেন্ট লুপ ক্র্যাশ ফিক্স (হটফিক্স) ---
+# Pyrogram ইমপোর্ট করার আগেই এই লুপটি তৈরি এবং সেট করতে হবে
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# এখন অন্যান্য প্রয়োজনীয় লাইব্রেরি ও Pyrogram ইমপোর্ট করা হচ্ছে
 import random
 import string
 import logging
@@ -10,7 +20,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, 
 from pyrogram.errors import UserNotParticipant
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# বেসিক লগিং কনফিগারেশন (যাতে রেন্ডারের লগে সব ডিটেইল দেখা যায়)
+# বেসিক লগিং কনফিগারেশন
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -22,7 +32,7 @@ MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://hepemo5263:hepemo5263@clu
 OWNER_ID = int(os.environ.get("OWNER_ID", "7409347279")) 
 PORT = int(os.environ.get("PORT", "8080")) # Render/Koyeb-এর পোর্ট
 
-# বট ও ডাটাবেজ ইনিশিয়ালাইজেশন (সেশন লক এড়াতে in_memory=True যুক্ত করা হয়েছে)
+# বট ও ডাটাবেজ ইনিশিয়ালাইজেশন (in_memory=True যুক্ত করা হয়েছে)
 app = Client(
     "PublicBatchStoreBot", 
     api_id=API_ID, 
@@ -174,7 +184,7 @@ async def done_batch(client, message: Message):
     user_data = await users_col.find_one({"_id": user_id})
     
     if not user_data or not user_data.get("batch_mode"):
-        return await message.reply_text("আপনি ব্যাচ মোডে নেই। নতুন ব্যাচ শুরু করতে `/batch` লিখুন।")
+        return await message.reply_text("আপনি ব্যাচ মোডে নেই। নতুন ব্যাচ শুরু করতে `/batch` লিখুন。")
     
     files_list = user_data.get("batch_files", [])
     if not files_list:
@@ -350,11 +360,10 @@ async def run_bot():
 
 if __name__ == "__main__":
     try:
-        # আধুনিক asyncio.run() ব্যবহার করা হয়েছে যা পাইথন ৩.১০+ এ সবচেয়ে নিরাপদ
-        asyncio.run(run_bot())
+        # ইতিপূর্বে তৈরি লুপটি ব্যবহার করে বট রান করা হচ্ছে
+        loop.run_until_complete(run_bot())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user.")
     except Exception as e:
-        # কোনো কারণে ক্র্যাশ করলে রেন্ডারের কনসোলে যেন সম্পূর্ণ ট্র্যাকিং দেখা যায়
         logger.error("An error occurred during bot execution:")
         traceback.print_exc()
