@@ -30,7 +30,7 @@ MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://hepemo5263:hepemo5263@clu
 OWNER_ID = int(os.environ.get("OWNER_ID", "7409347279")) 
 PORT = int(os.environ.get("PORT", "8080")) 
 
-# থাম্বনেইল/পোস্টার ইমেজ লিংক (আপনি চাইলে এটি পরিবর্তন করতে পারেন)
+# থাম্বনেইল/পোস্টার ইমেজ লিংক
 START_PIC = os.environ.get("START_PIC", "https://files.catbox.moe/4rpz79.jpg")
 
 # বট ও ডাটাবেজ ইনিশিয়ালাইজেশন
@@ -79,7 +79,7 @@ async def get_autodelete_time():
         return setting.get("time", 0) # মিনিটে রিটার্ন করবে, ০ মানে বন্ধ
     return 0
 
-# মেসেজ ডিলিট করার ব্যাকগ্রাউন্ড টাস্ক
+# Message deletion background task
 async def delete_after_delay(chat_id: int, message_ids: list, delay_minutes: int):
     await asyncio.sleep(delay_minutes * 60)
     try:
@@ -340,7 +340,7 @@ async def start_handler(client, message: Message):
     if len(args) < 2:
         start_caption = (
             "👋 **হ্যালো! আমি একটি অত্যন্ত দ্রুতগতির আধুনিক ফাইল স্টোর বট।**\n\n"
-            "📂 এখানে আপনি যেকোনো মুভি, সিরিজ বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
+            "📂 এখানে আপনি যেকোনো মুভি, serie বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
             "✨ **ফিচারসমূহ:**\n"
             "• মাল্টি-ফাইল ব্যাচ লিংক সাপোর্ট (`/batch`)\n"
             "• অটো-ডিলিট সিস্টেম প্রটেকশন\n"
@@ -348,14 +348,14 @@ async def start_handler(client, message: Message):
             "📢 নিচের বাটনগুলো ব্যবহার করে আমাদের সাথে যুক্ত থাকতে পারেন:"
         )
         
-        # প্রফেশনাল স্টার্ট বাটন
+        # প্রফেশনাল স্টার্ট বাটন (user_id-এর পরিবর্তে tg://user?id স্কিম ব্যবহার করা হয়েছে)
         start_buttons = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("📢 আপডেট চ্যানেল", url="https://t.me/TGLinkBase"), # আপনার চ্যানেল লিংক বসান
-                InlineKeyboardButton("💬 সাপোর্ট গ্রুপ", url="https://t.me/TGLinkBase") # আপনার গ্রুপ লিংক বসান
+                InlineKeyboardButton("📢 আপডেট চ্যানেল", url="https://t.me/TGLinkBase"), 
+                InlineKeyboardButton("💬 সাপোর্ট গ্রুপ", url="https://t.me/TGLinkBase") 
             ],
             [
-                InlineKeyboardButton("👨‍💻 ডেভেলপার আইডি", user_id=OWNER_ID)
+                InlineKeyboardButton("👨‍💻 ডেভেলপার আইডি", url=f"tg://user?id={OWNER_ID}")
             ]
         ])
         
@@ -365,7 +365,8 @@ async def start_handler(client, message: Message):
                 caption=start_caption,
                 reply_markup=start_buttons
             )
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to send photo: {e}")
             # কোনো কারণে ফটো সেন্ড না হলে টেক্সট হিসেবে পাঠানো হবে
             return await message.reply_text(
                 text=start_caption,
