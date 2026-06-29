@@ -2,6 +2,7 @@ import os
 import asyncio
 import random
 import string
+from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, ChatJoinRequest
 from pyrogram.errors import UserNotParticipant
@@ -12,32 +13,48 @@ API_ID = int(os.environ.get("API_ID", "123456"))
 API_HASH = os.environ.get("API_HASH", "your_api_hash") 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token") 
 MONGO_URL = os.environ.get("MONGO_URL", "your_mongodb_url") 
-OWNER_ID = int(os.environ.get("OWNER_ID", "123456789")) # বটের প্রধান মালিকের আইডি
+OWNER_ID = int(os.environ.get("OWNER_ID", "123456789")) 
+PORT = int(os.environ.get("PORT", "8080")) # Render/Koyeb-এর পোর্ট
 
 # বট ও ডাটাবেজ ইনিশিয়ালাইজেশন
-app = Client("PublicFileStoreBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("PublicBatchStoreBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 db_client = AsyncIOMotorClient(MONGO_URL)
-db = db_client["PublicFileStoreDB"]
+db = db_client["PublicBatchStoreDB"]
 
 # ডাটাবেজ কালেকশনস
 files_col = db["files"]
 users_col = db["users"]
 fsub_col = db["fsub_channels"]
 requests_col = db["join_requests"]
-admins_col = db["admins"] # সহকারী এডমিনদের তালিকা
+admins_col = db["admins"]
 
 # ইউনিক আইডি জেনারেটর
 def generate_id():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=8))
 
-# --- এডমিন চেক করার হেল্পার ফাংশন ---
+# এডমিন চেক করার হেল্পার ফাংশন
 async def is_admin(user_id: int) -> bool:
     if user_id == OWNER_ID:
         return True
     admin = await admins_col.find_one({"_id": user_id})
     return admin is not None
 
-# --- জয়েন রিকোয়েস্ট ট্র্যাকিং (পেন্ডিং রাখার জন্য) ---
+# ================= AIOHTTP WEB SERVER (For Render/Koyeb) =================
+
+async def handle_root(request):
+    return web.Response(text="Bot Web Server is running perfectly!")
+
+async def start_webserver():
+    web_app = web.Application()
+    web_app.router.add_get("/", handle_root)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"Web server started on port {PORT}")
+
+# ================= JOIN REQUEST TRACKING =================
+
 @app.on_chat_join_request()
 async def track_join_request(client, request: ChatJoinRequest):
     channel_id = str(request.chat.id)
@@ -49,57 +66,59 @@ async def track_join_request(client, request: ChatJoinRequest):
             upsert=True
         )
 
-# ================= OWNER COMMANDS =================
+# ================= OWNER & ADMIN COMMANDS =================
 
 @app.on_message(filters.command("addadmin") & filters.user(OWNER_ID))
 async def add_admin(client, message: Message):
     args = message.text.split()
     if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম:\n`/addadmin <ইউজার_আইডি>`")
+        return await message.reply_text("ব্যবহারের নিয়ম: `/addadmin <ইউজার_আইডি>`")
     try:
         new_admin_id = int(args[1])
         await admins_col.update_one({"_id": new_admin_id}, {"$set": {"active": True}}, upsert=True)
         await message.reply_text(f"ইউজার `{new_admin_id}` সফলভাবে এডমিন হিসেবে নিযুক্ত হয়েছেন।")
     except ValueError:
-        await message.reply_text("দয়া করে সঠিক নিউমেরিক আইডি দিন।")
+        await message.reply_text("সঠিক আইডি প্রদান করুন।")
 
 @app.on_message(filters.command("deladmin") & filters.user(OWNER_ID))
 async def del_admin(client, message: Message):
     args = message.text.split()
     if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম:\n`/deladmin <ইউজার_আইডি>`")
+        return await message.reply_text("ব্যবহারের নিয়ম: `/deladmin <ইউজার_আইডি>`")
     try:
         admin_id = int(args[1])
-        result = await admins_col.delete_one({"_id": admin_id})
-        if result.deleted_count > 0:
-            await message.reply_text("এডমিনকে সফলভাবে অপসারণ করা হয়েছে।")
-        else:
-            await message.reply_text("এই আইডিটি এডমিন লিস্টে পাওয়া যায়নি।")
+        await admins_col.delete_one({"_id": admin_id})
+        await message.reply_text("এডমিন সফলভাবে বাদ দেওয়া হয়েছে।")
     except ValueError:
-        await message.reply_text("দয়া করে সঠিক নিউমেরিক আইডি দিন।")
+        await message.reply_text("সঠিক আইডি প্রদান করুন।")
 
-@app.on_message(filters.command("adminlist") & filters.user(OWNER_ID))
-async def list_admins(client, message: Message):
-    admins = admins_col.find({})
-    text = f"👑 **প্রধান মালিক:** `{OWNER_ID}`\n\n👮‍♂️ **সহকারী এডমিনবৃন্দ:**\n"
-    async for admin in admins:
-        text += f"- `{admin['_id']}`\n"
-    await message.reply_text(text)
+# --- ডিলিট কমান্ড (এডমিনদের জন্য) ---
+@app.on_message(filters.command("delete"))
+async def delete_file(client, message: Message):
+    if not await is_admin(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.reply_text("ব্যবহারের নিয়ম:\n`/delete <ফাইল_কী>`")
+    
+    file_key = args[1]
+    result = await files_col.delete_one({"_id": file_key})
+    
+    if result.deleted_count > 0:
+        await message.reply_text("ফাইল/ব্যাচ ডাটাবেজ থেকে স্থায়ীভাবে ডিলিট করা হয়েছে।")
+    else:
+        await message.reply_text("এই ফাইল কী-টি ডাটাবেজে পাওয়া যায়নি।")
 
-# ================= ADMIN COMMANDS (Owner & Admins) =================
-
+# --- FSub অ্যাড/রিমুভ কমান্ডসমূহ ---
 @app.on_message(filters.command("addfsub"))
 async def add_fsub(client, message: Message):
     if not await is_admin(message.from_user.id):
         return
     args = message.text.split(maxsplit=2)
     if len(args) < 3:
-        return await message.reply_text("ব্যবহারের নিয়ম:\n`/addfsub <চ্যানেল_আইডি> <রিকোয়েস্ট_লিংক>`")
-    
-    channel_id = args[1]
-    invite_link = args[2]
-    await fsub_col.update_one({"_id": channel_id}, {"$set": {"invite_link": invite_link}}, upsert=True)
-    await message.reply_text("FSub চ্যানেল সফলভাবে যুক্ত হয়েছে।")
+        return await message.reply_text("ব্যবহারের নিয়ম: `/addfsub <চ্যানেল_আইডি> <লিংক>`")
+    await fsub_col.update_one({"_id": args[1]}, {"$set": {"invite_link": args[2]}}, upsert=True)
+    await message.reply_text("FSub চ্যানেল যুক্ত হয়েছে।")
 
 @app.on_message(filters.command("delfsub"))
 async def del_fsub(client, message: Message):
@@ -107,87 +126,117 @@ async def del_fsub(client, message: Message):
         return
     args = message.text.split()
     if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম:\n`/delfsub <চ্যানেল_আইডি>`")
-    
-    channel_id = args[1]
-    result = await fsub_col.delete_one({"_id": channel_id})
-    if result.deleted_count > 0:
-        await message.reply_text("চ্যানেলটি FSub তালিকা থেকে বাদ দেওয়া হয়েছে।")
-    else:
-        await message.reply_text("চ্যানেলটি খুঁজে পাওয়া যায়নি।")
+        return await message.reply_text("ব্যবহারের নিয়ম: `/delfsub <আইডি>`")
+    await fsub_col.delete_one({"_id": args[1]})
+    await message.reply_text("FSub চ্যানেল বাদ দেওয়া হয়েছে।")
 
-@app.on_message(filters.command("fsublist"))
-async def list_fsub(client, message: Message):
-    if not await is_admin(message.from_user.id):
-        return
-    channels = fsub_col.find({})
-    text = "**FSub চ্যানেল তালিকা:**\n\n"
-    async for ch in channels:
-        text += f"ID: `{ch['_id']}`\nLink: {ch['invite_link']}\n\n"
-    await message.reply_text(text or "কোনো FSub চ্যানেল যুক্ত নেই।")
+# ================= MULTI-FILE BATCH SYSTEM =================
 
-@app.on_message(filters.command("stats"))
-async def stats_handler(client, message: Message):
-    if not await is_admin(message.from_user.id):
-        return
-    total_users = await users_col.count_documents({})
-    total_files = await files_col.count_documents({})
-    await message.reply_text(f"📈 **বটের বর্তমান অবস্থা:**\n\n👥 মোট ইউজার: `{total_users}`\n📂 মোট সংরক্ষিত ফাইল: `{total_files}`")
-
-@app.on_message(filters.command("broadcast"))
-async def broadcast_handler(client, message: Message):
-    if not await is_admin(message.from_user.id):
-        return
-    if not message.reply_to_message:
-        return await message.reply_text("যে মেসেজটি ব্রডকাস্ট করতে চান সেটি রিপ্লাই করে `/broadcast` লিখুন।")
-    
-    broadcast_msg = message.reply_to_message
-    await message.reply_text("ব্রডকাস্ট শুরু হয়েছে...")
-    
-    users = users_col.find({})
-    success = 0
-    failed = 0
-    
-    async for user in users:
-        try:
-            await broadcast_msg.copy(chat_id=user["_id"])
-            success += 1
-            await asyncio.sleep(0.3) # ফ্লাড এড়াতে সাময়িক বিরতি
-        except Exception:
-            failed += 1
-            
-    await message.reply_text(f"📢 **ব্রডকাস্ট সম্পন্ন হয়েছে!**\n\nসফল: `{success}` জন\nব্যর্থ: `{failed}` জন")
-
-# ================= PUBLIC FILE STORING (সবার জন্য ফাইল সেভ করার সুবিধা) =================
-
-@app.on_message((filters.document | filters.video | filters.audio | filters.photo) & filters.private)
-async def store_file_public(client, message: Message):
+# ব্যাচ মোড শুরু করার কমান্ড
+@app.on_message(filters.command("batch") & filters.private)
+async def start_batch(client, message: Message):
     user_id = message.from_user.id
-    
-    # ফাইলের ধরন অনুযায়ী আইডি সংগ্রহ
-    if message.document:
-        file_id = message.document.file_id
-    elif message.video:
-        file_id = message.video.file_id
-    elif message.audio:
-        file_id = message.audio.file_id
-    else:
-        file_id = message.photo[0].file_id if isinstance(message.photo, list) else message.photo.file_id
+    await users_col.update_one(
+        {"_id": user_id},
+        {"$set": {"batch_mode": True, "batch_files": []}},
+        upsert=True
+    )
+    await message.reply_text(
+        "📥 **ব্যাচ মোড চালু হয়েছে!**\n\nএখন একের পর এক আপনার ফাইলগুলো পাঠাতে থাকুন। সব পাঠানো শেষ হলে `/done` লিখে কমান্ড দিন।\n\n*বাতিল করতে চাইলে `/cancel` লিখুন।*"
+    )
 
+# ব্যাচ মোড বাতিল করার কমান্ড
+@app.on_message(filters.command("cancel") & filters.private)
+async def cancel_batch(client, message: Message):
+    user_id = message.from_user.id
+    await users_col.update_one(
+        {"_id": user_id},
+        {"$unset": {"batch_mode": "", "batch_files": ""}}
+    )
+    await message.reply_text("ব্যাচ মোড বাতিল করা হয়েছে।")
+
+# ব্যাচ সেভ করার কমান্ড
+@app.on_message(filters.command("done") & filters.private)
+async def done_batch(client, message: Message):
+    user_id = message.from_user.id
+    user_data = await users_col.find_one({"_id": user_id})
+    
+    if not user_data or not user_data.get("batch_mode"):
+        return await message.reply_text("আপনি ব্যাচ মোডে নেই। নতুন ব্যাচ শুরু করতে `/batch` লিখুন।")
+    
+    files_list = user_data.get("batch_files", [])
+    if not files_list:
+        return await message.reply_text("আপনি কোনো ফাইল পাঠাননি। ব্যাচ মোড বন্ধ করতে `/cancel` লিখুন।")
+    
     file_key = generate_id()
     
-    # ডাটাবেজে ফাইল ও আপলোডারের তথ্য সেভ করা
+    # ডাটাবেজে ব্যাচ ফাইল লিস্ট সেভ করা
+    await files_col.insert_one({
+        "_id": file_key,
+        "files": files_list, # ফাইলের আইডি এবং টাইপের অ্যারে
+        "uploader_id": user_id,
+        "is_batch": True
+    })
+    
+    # ইউজারের ব্যাচ মোড স্ট্যাটাস রিসেট করা
+    await users_col.update_one(
+        {"_id": user_id},
+        {"$unset": {"batch_mode": "", "batch_files": ""}}
+    )
+    
+    bot_username = (await client.get_me()).username
+    share_link = f"https://t.me/{bot_username}?start={file_key}"
+    
+    await message.reply_text(
+        f"✅ **আপনার ব্যাচ ফাইলটি সেভ হয়েছে!**\n\n📦 মোট ফাইলের সংখ্যা: `{len(files_list)}` টি\n🔗 **শেয়ার লিংক:**\n`{share_link}`",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("শেয়ার করুন 🚀", url=f"https://telegram.me/share/url?url={share_link}")
+        ]])
+    )
+
+# ================= FILE RECEIVER (Handling Batch & Single) =================
+
+@app.on_message((filters.document | filters.video | filters.audio | filters.photo) & filters.private)
+async def handle_incoming_files(client, message: Message):
+    user_id = message.from_user.id
+    user_data = await users_col.find_one({"_id": user_id})
+
+    # ফাইলের তথ্য সংগ্রহ
+    if message.document:
+        file_id, file_type = message.document.file_id, "document"
+    elif message.video:
+        file_id, file_type = message.video.file_id, "video"
+    elif message.audio:
+        file_id, file_type = message.audio.file_id, "audio"
+    else:
+        file_id, file_type = (message.photo[0].file_id if isinstance(message.photo, list) else message.photo.file_id), "photo"
+
+    file_item = {"file_id": file_id, "type": file_type}
+
+    # ইউজার যদি ব্যাচ মোডে থাকে
+    if user_data and user_data.get("batch_mode"):
+        await users_col.update_one(
+            {"_id": user_id},
+            {"$push": {"batch_files": file_item}}
+        )
+        current_count = len(user_data.get("batch_files", [])) + 1
+        return await message.reply_text(f"📥 ফাইল যুক্ত হয়েছে (মোট: {current_count} টি)। পরবর্তী ফাইল পাঠান অথবা শেষ করতে `/done` লিখুন।")
+
+    # সাধারণ সিঙ্গেল ফাইল সেভ
+    file_key = generate_id()
     await files_col.insert_one({
         "_id": file_key,
         "file_id": file_id,
-        "uploader_id": user_id
+        "type": file_type,
+        "uploader_id": user_id,
+        "is_batch": False
     })
     
     bot_username = (await client.get_me()).username
     share_link = f"https://t.me/{bot_username}?start={file_key}"
     
     await message.reply_text(
-        f"📥 **আপনার ফাইলটি ডাটাবেজে সফলভাবে সংরক্ষিত হয়েছে!**\n\n🔗 **শেয়ার লিংক:**\n`{share_link}`",
+        f"📥 **ফাইল সেভ হয়েছে!**\n\n🔗 **লিংক:**\n`{share_link}`",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("শেয়ার করুন 🚀", url=f"https://telegram.me/share/url?url={share_link}")
         ]])
@@ -199,7 +248,6 @@ async def store_file_public(client, message: Message):
 async def start_handler(client, message: Message):
     user_id = message.from_user.id
     
-    # ইউজার ডাটাবেজে সংরক্ষণ
     await users_col.update_one(
         {"_id": user_id},
         {"$set": {"username": message.from_user.username}},
@@ -208,11 +256,11 @@ async def start_handler(client, message: Message):
 
     args = message.text.split()
     if len(args) < 2:
-        return await message.reply_text("স্বাগতম! আমি একটি ফাইল স্টোর বট। এখানে আপনি যেকোনো ফাইল পাঠিয়ে নিজের শেয়ারিং লিংক তৈরি করে নিতে পারবেন।")
+        return await message.reply_text("হ্যালো! আমি একটি মাল্টি-ফাইল স্টোর বট। একাধিক ফাইলের একটি লিংক তৈরি করতে প্রথমে `/batch` কমান্ড দিন।")
 
     file_key = args[1]
 
-    # FSub চ্যানেলসমূহ চেক করা
+    # FSub জয়েন রিকোয়েস্ট চেক করা
     unjoined_channels = []
     fsub_channels = fsub_col.find({})
     
@@ -236,7 +284,6 @@ async def start_handler(client, message: Message):
         if not is_accessible:
             unjoined_channels.append(channel)
 
-    # যদি কোনো চ্যানেলে রিকোয়েস্ট পাঠানো বাকি থাকে
     if unjoined_channels:
         buttons = []
         for index, ch in enumerate(unjoined_channels, start=1):
@@ -246,23 +293,45 @@ async def start_handler(client, message: Message):
         buttons.append([InlineKeyboardButton("আমি রিকোয়েস্ট পাঠিয়েছি (ফাইল দিন)", url=try_again_url)])
         
         return await message.reply_text(
-            "⚠️ **ফাইলটি পেতে আপনাকে আমাদের চ্যানেলে জয়েন রিকোয়েস্ট পাঠাতে হবে!**\n\nনিচের বাটনগুলো ব্যবহার করে রিকোয়েস্ট পাঠান এবং তারপর 'ফাইল দিন' বাটনে ক্লিক করুন।",
+            "⚠️ **ফাইলগুলো পেতে আপনাকে আমাদের চ্যানেলে জয়েন রিকোয়েস্ট পাঠাতে হবে!**\n\nনিচের বাটনগুলো ব্যবহার করে রিকোয়েস্ট পাঠান এবং তারপর 'ফাইল দিন' বাটনে ক্লিক করুন।",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    # ফাইল ডাটাবেজ থেকে খুঁজে পাঠানো
+    # ফাইল বা ব্যাচ ডেলিভারি করা
     file_data = await files_col.find_one({"_id": file_key})
     if file_data:
         try:
-            await client.send_cached_media(
-                chat_id=message.chat.id,
-                file_id=file_data["file_id"],
-                caption="📤 **আপনার ফাইলটি নিচে দেওয়া হলো।**"
-            )
+            # যদি এটি ব্যাচ ফাইল হয়
+            if file_data.get("is_batch"):
+                await message.reply_text(f"📦 আপনার ব্যাচে মোট `{len(file_data['files'])}` টি ফাইল রয়েছে। ফাইলগুলো পাঠানো হচ্ছে...")
+                for file_item in file_data["files"]:
+                    await client.send_cached_media(
+                        chat_id=message.chat.id,
+                        file_id=file_item["file_id"]
+                    )
+                    await asyncio.sleep(0.5) # ফ্লাড এড়াতে সাময়িক বিরতি
+            else:
+                # সিঙ্গেল ফাইল
+                await client.send_cached_media(
+                    chat_id=message.chat.id,
+                    file_id=file_data["file_id"],
+                    caption="এখানে আপনার ফাইলটি দেওয়া হলো।"
+                )
         except Exception as e:
-            await message.reply_text(f"ফাইলটি পাঠাতে সমস্যা হচ্ছে: {e}")
+            await message.reply_text(f"ফাইল পাঠাতে ত্রুটি হয়েছে: {e}")
     else:
-        await message.reply_text("❌ ফাইলটি ডাটাবেজে পাওয়া যায়নি বা মুছে ফেলা হয়েছে।")
+        await message.reply_text("❌ ফাইল বা ব্যাচটি ডাটাবেজে পাওয়া যায়নি বা ডিলিট করা হয়েছে।")
+
+# ================= RUNNING BOTH SERVER & BOT =================
+
+async def run_bot():
+    await app.start()
+    print("Telegram bot started successfully!")
+    # ওয়েব সার্ভার ব্যাকগ্রাউন্ডে চালু করা
+    await start_webserver()
+    # বটকে সচল রাখা
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    app.run()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(run_bot())
