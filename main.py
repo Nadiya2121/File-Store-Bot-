@@ -28,7 +28,7 @@ API_HASH = os.environ.get("API_HASH", "297f51aaab99720a09e80273628c3c24")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8787371353:AAEUE0vK2siElnew2LnaAs-3djZPxxjFKpo") 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://hepemo5263:hepemo5263@cluster0.5vugv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0") 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8297458824")) 
-PORT = int(os.environ.get("PORT", "8080")) 
+PORT = int(os.environ.get("PORT", "8000")) # Koyeb ও Render ওয়েব সার্ভিসের জন্য ডিফল্ট পোর্ট ৮০০০ করা হয়েছে
 
 # থাম্বনেইল/পোস্টার ইমেজ লিংক
 START_PIC = os.environ.get("START_PIC", "https://files.catbox.moe/4rpz79.jpg")
@@ -332,7 +332,7 @@ async def unified_command_handler(client, message: Message):
     # ৭. /fsublist কমান্ড (এডমিনদের জন্য)
     elif command == "/fsublist":
         if not await is_admin(user_id):
-            return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+            return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন。\n👤 আপনার আইডি: `{user_id}`")
         channels = fsub_col.find({})
         text = "**FSub চ্যানেল তালিকা:**\n\n"
         has_channel = False
