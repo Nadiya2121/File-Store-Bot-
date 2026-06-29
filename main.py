@@ -113,283 +113,20 @@ async def track_join_request(client, request: ChatJoinRequest):
             upsert=True
         )
 
-# ================= OWNER COMMANDS (addadmin, deladmin, adminlist) =================
+# ================= START COMMAND LOGIC HELPERS =================
 
-@app.on_message(filters.command("addadmin") & filters.private)
-async def add_admin(client, message: Message):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return await message.reply_text(
-            f"❌ **এই কমান্ডটি ব্যবহারের অনুমতি আপনার নেই!**\n\n"
-            f"👤 আপনার আইডি: `{user_id}`\n"
-            f"👑 বটের মালিকের আইডি: `{OWNER_ID}`\n\n"
-            f"*(আপনার আইডিটি যদি ভুল হয়ে থাকে, তবে রেন্ডারের 'OWNER_ID' ভেরিয়েবলে আপনার সঠিক আইডিটি সেট করুন)*"
-        )
-    
-    args = message.text.split()
-    if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম: `/addadmin <ইউজার_আইডি>`")
-    try:
-        new_admin_id = int(args[1])
-        await admins_col.update_one({"_id": new_admin_id}, {"$set": {"active": True}}, upsert=True)
-        await message.reply_text(f"ইউজার `{new_admin_id}` সফলভাবে এডমিন হিসেবে নিযুক্ত হয়েছেন।")
-    except ValueError:
-        await message.reply_text("সঠিক আইডি প্রদান করুন।")
-
-@app.on_message(filters.command("deladmin") & filters.private)
-async def del_admin(client, message: Message):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return await message.reply_text(f"❌ এই কমান্ডটি শুধুমাত্র বটের প্রধান মালিক ব্যবহার করতে পারবেন।\n👤 আপনার আইডি: `{user_id}`")
-    
-    args = message.text.split()
-    if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম: `/deladmin <ইউজার_আইডি>`")
-    try:
-        admin_id = int(args[1])
-        await admins_col.delete_one({"_id": admin_id})
-        await message.reply_text("এডমিন সফলভাবে বাদ দেওয়া হয়েছে।")
-    except ValueError:
-        await message.reply_text("সঠিক আইডি প্রদান করুন।")
-
-@app.on_message(filters.command("adminlist") & filters.private)
-async def list_admins(client, message: Message):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return await message.reply_text(f"❌ এই কমান্ডটি শুধুমাত্র বটের প্রধান মালিক ব্যবহার করতে পারবেন।\n👤 আপনার আইডি: `{user_id}`")
-    
-    admins = admins_col.find({})
-    text = f"👑 **প্রধান মালিক:** `{OWNER_ID}`\n\n👮‍♂️ **সহকারী এডমিনবৃন্দ:**\n"
-    has_admin = False
-    async for admin in admins:
-        text += f"- `{admin['_id']}`\n"
-        has_admin = True
-    if not has_admin:
-        text += "*(কোনো সহকারী এডমিন যুক্ত নেই)*"
-    await message.reply_text(text)
-
-# ================= ADMIN COMMANDS (FSub, Delete, Auto-delete) =================
-
-@app.on_message(filters.command("addfsub") & filters.private)
-async def add_fsub(client, message: Message):
-    user_id = message.from_user.id
-    if not await is_admin(user_id):
-        return await message.reply_text(f"❌ **আপনি এই বটের এডমিন নন!**\n👤 আপনার আইডি: `{user_id}`")
-    
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        return await message.reply_text("ব্যবহারের নিয়ম: `/addfsub <চ্যানেল_আইডি> <লিংক>`")
-    await fsub_col.update_one({"_id": args[1]}, {"$set": {"invite_link": args[2]}}, upsert=True)
-    await message.reply_text("FSub চ্যানেল যুক্ত হয়েছে।")
-
-@app.on_message(filters.command("delfsub") & filters.private)
-async def del_fsub(client, message: Message):
-    user_id = message.from_user.id
-    if not await is_admin(user_id):
-        return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
-    
-    args = message.text.split()
-    if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম: `/delfsub <আইডি>`")
-    await fsub_col.delete_one({"_id": args[1]})
-    await message.reply_text("FSub চ্যানেল বাদ দেওয়া হয়েছে।")
-
-@app.on_message(filters.command("fsublist") & filters.private)
-async def list_fsub(client, message: Message):
-    user_id = message.from_user.id
-    if not await is_admin(user_id):
-        return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
-    
-    channels = fsub_col.find({})
-    text = "**FSub চ্যানেল তালিকা:**\n\n"
-    has_channel = False
-    async for ch in channels:
-        text += f"ID: `{ch['_id']}`\nLink: {ch['invite_link']}\n\n"
-        has_channel = True
-    if not has_channel:
-        text += "*(কোনো FSub চ্যানেল যুক্ত নেই)*"
-    await message.reply_text(text)
-
-@app.on_message(filters.command("delete") & filters.private)
-async def delete_file(client, message: Message):
-    user_id = message.from_user.id
-    if not await is_admin(user_id):
-        return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
-    
-    args = message.text.split()
-    if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম:\n`/delete <ফাইল_কী>`")
-    
-    file_key = args[1]
-    result = await files_col.delete_one({"_id": file_key})
-    if result.deleted_count > 0:
-        await message.reply_text("ফাইল/ব্যাচ ডাটাবেজ থেকে স্থায়ীভাবে ডিলিট করা হয়েছে।")
-    else:
-        await message.reply_text("এই ফাইল কী-টি ডাটাবেজে পাওয়া যায়নি।")
-
-@app.on_message(filters.command("setautodelete") & filters.private)
-async def set_autodelete(client, message: Message):
-    user_id = message.from_user.id
-    if not await is_admin(user_id):
-        return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
-    
-    args = message.text.split()
-    if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম:\n`/setautodelete <মিনিট>`\n(বন্ধ করতে `/setautodelete 0` লিখুন)")
-    try:
-        minutes = int(args[1])
-        await settings_col.update_one(
-            {"_id": "autodelete_config"},
-            {"$set": {"time": minutes}},
-            upsert=True
-        )
-        if minutes > 0:
-            await message.reply_text(f"অটো-ডিলিট সফলভাবে `{minutes}` মিনিটের জন্য সেট করা হয়েছে।")
-        else:
-            await message.reply_text("অটো-ডিলিট সিস্টেম বন্ধ করা হয়েছে।")
-    except ValueError:
-        await message.reply_text("দয়া করে সঠিক মিনিট সংখ্যায় লিখুন।")
-
-# ================= MULTI-FILE BATCH SYSTEM =================
-
-@app.on_message(filters.command("batch") & filters.private)
-async def start_batch(client, message: Message):
-    user_id = message.from_user.id
-    await users_col.update_one(
-        {"_id": user_id},
-        {"$set": {"batch_mode": True, "batch_files": []}},
-        upsert=True
-    )
-    await message.reply_text(
-        "📥 **ব্যাচ মোড চালু হয়েছে!**\n\nএখন একে একে আপনার ফাইলগুলো পাঠাতে থাকুন। সব পাঠানো শেষ হলে `/done` লিখে কমান্ড দিন।\n\n*বাতিল করতে চাইলে `/cancel` লিখুন।*"
-    )
-
-@app.on_message(filters.command("cancel") & filters.private)
-async def cancel_batch(client, message: Message):
-    user_id = message.from_user.id
-    await users_col.update_one(
-        {"_id": user_id},
-        {"$unset": {"batch_mode": "", "batch_files": ""}}
-    )
-    await message.reply_text("ব্যাচ মোড বাতিল করা হয়েছে।")
-
-@app.on_message(filters.command("done") & filters.private)
-async def done_batch(client, message: Message):
-    user_id = message.from_user.id
-    user_data = await users_col.find_one({"_id": user_id})
-    
-    if not user_data or not user_data.get("batch_mode"):
-        return await message.reply_text("আপনি ব্যাচ মোডে নেই। নতুন ব্যাচ শুরু করতে `/batch` লিখুন।")
-    
-    files_list = user_data.get("batch_files", [])
-    if not files_list:
-        return await message.reply_text("আপনি কোনো ফাইল পাঠাননি। ব্যাচ মোড বন্ধ করতে `/cancel` লিখুন।")
-    
-    file_key = generate_id()
-    await files_col.insert_one({
-        "_id": file_key,
-        "files": files_list, 
-        "uploader_id": user_id,
-        "is_batch": True
-    })
-    
-    await users_col.update_one(
-        {"_id": user_id},
-        {"$unset": {"batch_mode": "", "batch_files": ""}}
-    )
-    
-    bot_username = (await client.get_me()).username
-    share_link = f"https://t.me/{bot_username}?start={file_key}"
-    
-    await message.reply_text(
-        f"✅ **আপনার ব্যাচ ফাইলটি সেভ হয়েছে!**\n\n📦 মোট ফাইলের সংখ্যা: `{len(files_list)}` টি\n🔗 **শেয়ার লিংক:**\n`{share_link}`",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("শেয়ার করুন 🚀", url=f"https://telegram.me/share/url?url={share_link}")
-        ]])
-    )
-
-# ================= FILE RECEIVER (Handling Batch & Single) =================
-
-@app.on_message((filters.document | filters.video | filters.audio | filters.photo) & filters.private)
-async def handle_incoming_files(client, message: Message):
-    user_id = message.from_user.id
-    user_data = await users_col.find_one({"_id": user_id})
-
-    # ফাইলের তথ্য, আসল নাম ও সাইজ সংগ্রহ করা হচ্ছে
-    file_name = "Unnamed File"
-    file_size = 0
-    
-    if message.document:
-        file_id, file_type = message.document.file_id, "document"
-        file_name = message.document.file_name or "Document"
-        file_size = message.document.file_size
-    elif message.video:
-        file_id, file_type = message.video.file_id, "video"
-        file_name = message.video.file_name or message.caption or "Video"
-        file_size = message.video.file_size
-    elif message.audio:
-        file_id, file_type = message.audio.file_id, "audio"
-        file_name = message.audio.file_name or "Audio"
-        file_size = message.audio.file_size
-    else:
-        file_id, file_type = (message.photo[0].file_id if isinstance(message.photo, list) else message.photo.file_id), "photo"
-        file_name = "Image File"
-        file_size = 0
-
-    file_item = {
-        "file_id": file_id, 
-        "type": file_type, 
-        "file_name": file_name, 
-        "file_size": file_size
-    }
-
-    # ইউজার যদি ব্যাচ মোডে থাকে
-    if user_data and user_data.get("batch_mode"):
-        await users_col.update_one(
-            {"_id": user_id},
-            {"$push": {"batch_files": file_item}}
-        )
-        current_count = len(user_data.get("batch_files", [])) + 1
-        return await message.reply_text(f"📥 ফাইল যুক্ত হয়েছে (মোট: {current_count} টি)। পরবর্তী ফাইল পাঠান অথবা শেষ করতে `/done` লিখুন।")
-
-    # সাধারণ সিঙ্গেল ফাইল সেভ
-    file_key = generate_id()
-    await files_col.insert_one({
-        "_id": file_key,
-        "file_id": file_id,
-        "type": file_type,
-        "file_name": file_name,
-        "file_size": file_size,
-        "uploader_id": user_id,
-        "is_batch": False
-    })
-    
-    bot_username = (await client.get_me()).username
-    share_link = f"https://t.me/{bot_username}?start={file_key}"
-    
-    await message.reply_text(
-        f"📥 **ফাইল সেভ হয়েছে!**\n\n📁 **নাম:** `{file_name}`\n⚖️ **সাইজ:** `{get_readable_size(file_size)}`\n\n🔗 **লিংক:**\n`{share_link}`",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("শেয়ার করুন 🚀", url=f"https://telegram.me/share/url?url={share_link}")
-        ]])
-    )
-
-# ================= START COMMAND & FILE DELIVERY =================
-
-@app.on_message(filters.command("start") & filters.private)
-async def start_handler(client, message: Message):
+async def process_start_command(client, message: Message, args):
     user_id = message.from_user.id
     
+    # ইউজার ডাটাবেজে সংরক্ষণ
     await users_col.update_one(
         {"_id": user_id},
         {"$set": {"username": message.from_user.username}},
         upsert=True
     )
 
-    args = message.text.split()
-    
-    # --- সাধারণ স্টার্ট মেসেজ ---
-    if len(args) < 2:
+    # সাধারণ স্টার্ট মেসেজ (args না থাকলে)
+    if not args:
         start_caption = (
             "👋 **হ্যালো! আমি একটি অত্যন্ত দ্রুতগতির আধুনিক ফাইল স্টোর বট।**\n\n"
             "📂 এখানে আপনি যেকোনো মুভি, সিরিজ বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
@@ -423,7 +160,7 @@ async def start_handler(client, message: Message):
                 reply_markup=start_buttons
             )
 
-    file_key = args[1]
+    file_key = args[0]
 
     # FSub জয়েন রিকোয়েস্ট চেক করা
     unjoined_channels = []
@@ -508,6 +245,255 @@ async def start_handler(client, message: Message):
             await message.reply_text(f"ফাইল পাঠাতে ত্রুটি হয়েছে: {e}")
     else:
         await message.reply_text("❌ ফাইল বা ব্যাচটি ডাটাবেজে পাওয়া যায়নি বা ডিলিট করা হয়েছে।")
+
+# ================= UNIFIED COMMAND ROUTER (100% Reliable) =================
+
+@app.on_message(filters.text & filters.private)
+async def unified_command_handler(client, message: Message):
+    text = message.text.strip()
+    
+    # মেসেজ যদি স্লাশ (/) দিয়ে শুরু না হয়, তবে এটি কোনো কমান্ড নয়
+    if not text.startswith("/"):
+        return 
+
+    # কমান্ড এবং আর্গুমেন্ট আলাদা করা
+    parts = text.split()
+    command = parts[0].lower() # ছোট হাতের অক্ষরে রূপান্তর (কেস-সেন্সিটিভিটি ফিক্স)
+    args = parts[1:]
+    
+    user_id = message.from_user.id
+
+    # ১. /start কমান্ড
+    if command == "/start":
+        await process_start_command(client, message, args)
+
+    # ২. /addadmin কমান্ড (মালিকের জন্য)
+    elif command == "/addadmin":
+        if user_id != OWNER_ID:
+            return await message.reply_text(
+                f"❌ **এই কমান্ডটি ব্যবহারের অনুমতি আপনার নেই!**\n\n"
+                f"👤 আপনার আইডি: `{user_id}`\n"
+                f"👑 বটের মালিকের আইডি: `{OWNER_ID}`"
+            )
+        if len(args) < 1:
+            return await message.reply_text("ব্যবহারের নিয়ম: `/addadmin <ইউজার_আইডি>`")
+        try:
+            new_admin_id = int(args[0])
+            await admins_col.update_one({"_id": new_admin_id}, {"$set": {"active": True}}, upsert=True)
+            await message.reply_text(f"ইউজার `{new_admin_id}` সফলভাবে এডমিন হিসেবে নিযুক্ত হয়েছেন।")
+        except ValueError:
+            await message.reply_text("দয়া করে সঠিক সংখ্যায় আইডি দিন।")
+
+    # ৩. /deladmin কমান্ড (মালিকের জন্য)
+    elif command == "/deladmin":
+        if user_id != OWNER_ID:
+            return await message.reply_text(f"❌ এই কমান্ডটি ব্যবহারের অনুমতি আপনার নেই।\n👤 আপনার আইডি: `{user_id}`")
+        if len(args) < 1:
+            return await message.reply_text("ব্যবহারের নিয়ম: `/deladmin <ইউজার_আইডি>`")
+        try:
+            admin_id = int(args[0])
+            await admins_col.delete_one({"_id": admin_id})
+            await message.reply_text("এডমিন সফলভাবে বাদ দেওয়া হয়েছে।")
+        except ValueError:
+            await message.reply_text("দয়া করে সঠিক সংখ্যায় আইডি দিন।")
+
+    # ৪. /adminlist কমান্ড (মালিকের জন্য)
+    elif command == "/adminlist":
+        if user_id != OWNER_ID:
+            return await message.reply_text(f"❌ এই কমান্ডটি ব্যবহারের অনুমতি আপনার নেই।\n👤 আপনার আইডি: `{user_id}`")
+        admins = admins_col.find({})
+        text = f"👑 **প্রধান মালিক:** `{OWNER_ID}`\n\n👮‍♂️ **সহকারী এডমিনবৃন্দ:**\n"
+        has_admin = False
+        async for admin in admins:
+            text += f"- `{admin['_id']}`\n"
+            has_admin = True
+        if not has_admin:
+            text += "*(কোনো সহকারী এডমিন যুক্ত নেই)*"
+        await message.reply_text(text)
+
+    # ৫. /addfsub কমান্ড (এডমিনদের জন্য)
+    elif command == "/addfsub":
+        if not await is_admin(user_id):
+            return await message.reply_text(f"❌ **আপনি এই বটের এডমিন নন!**\n👤 আপনার আইডি: `{user_id}`")
+        if len(args) < 2:
+            return await message.reply_text("ব্যবহারের নিয়ম: `/addfsub <চ্যানেল_আইডি> <লিংক>`")
+        await fsub_col.update_one({"_id": args[0]}, {"$set": {"invite_link": args[1]}}, upsert=True)
+        await message.reply_text("FSub চ্যানেল সফলভাবে যুক্ত হয়েছে।")
+
+    # ৬. /delfsub কমান্ড (এডমিনদের জন্য)
+    elif command == "/delfsub":
+        if not await is_admin(user_id):
+            return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+        if len(args) < 1:
+            return await message.reply_text("ব্যবহারের নিয়ম: `/delfsub <আইডি>`")
+        await fsub_col.delete_one({"_id": args[0]})
+        await message.reply_text("FSub চ্যানেল বাদ দেওয়া হয়েছে।")
+
+    # ৭. /fsublist কমান্ড (এডমিনদের জন্য)
+    elif command == "/fsublist":
+        if not await is_admin(user_id):
+            return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+        channels = fsub_col.find({})
+        text = "**FSub চ্যানেল তালিকা:**\n\n"
+        has_channel = False
+        async for ch in channels:
+            text += f"ID: `{ch['_id']}`\nLink: {ch['invite_link']}\n\n"
+            has_channel = True
+        if not has_channel:
+            text += "*(কোনো FSub চ্যানেল যুক্ত নেই)*"
+        await message.reply_text(text)
+
+    # ৮. /setautodelete কমান্ড (এডমিনদের জন্য)
+    elif command == "/setautodelete":
+        if not await is_admin(user_id):
+            return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+        if len(args) < 1:
+            return await message.reply_text("ব্যবহারের নিয়ম:\n`/setautodelete <মিনিট>`\n(বন্ধ করতে `/setautodelete 0` লিখুন)")
+        try:
+            minutes = int(args[0])
+            await settings_col.update_one(
+                {"_id": "autodelete_config"},
+                {"$set": {"time": minutes}},
+                upsert=True
+            )
+            if minutes > 0:
+                await message.reply_text(f"অটো-ডিলিট সফলভাবে `{minutes}` মিনিটের জন্য সেট করা হয়েছে।")
+            else:
+                await message.reply_text("অটো-ডিলিট সিস্টেম বন্ধ করা হয়েছে।")
+        except ValueError:
+            await message.reply_text("দয়া করে সঠিক মিনিট সংখ্যায় লিখুন।")
+
+    # ৯. /delete কমান্ড (এডমিনদের জন্য)
+    elif command == "/delete":
+        if not await is_admin(user_id):
+            return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+        if len(args) < 1:
+            return await message.reply_text("ব্যবহারের নিয়ম:\n`/delete <ফাইল_কী>`")
+        file_key = args[0]
+        result = await files_col.delete_one({"_id": file_key})
+        if result.deleted_count > 0:
+            await message.reply_text("ফাইল/ব্যাচ ডাটাবেজ থেকে স্থায়ীভাবে ডিলিট করা হয়েছে।")
+        else:
+            await message.reply_text("এই ফাইল কী-টি ডাটাবেজে পাওয়া যায়নি।")
+
+    # ১০. /batch কমান্ড (সবার জন্য)
+    elif command == "/batch":
+        await users_col.update_one(
+            {"_id": user_id},
+            {"$set": {"batch_mode": True, "batch_files": []}},
+            upsert=True
+        )
+        await message.reply_text(
+            "📥 **ব্যাচ মোড চালু হয়েছে!**\n\nএখন একে একে আপনার ফাইলগুলো পাঠাতে থাকুন। সব পাঠানো শেষ হলে `/done` লিখে কমান্ড দিন।\n\n*বাতিল করতে চাইলে `/cancel` লিখুন।*"
+        )
+
+    # ১১. /cancel কমান্ড (সবার জন্য)
+    elif command == "/cancel":
+        await users_col.update_one(
+            {"_id": user_id},
+            {"$unset": {"batch_mode": "", "batch_files": ""}}
+        )
+        await message.reply_text("ব্যাচ মোড বাতিল করা হয়েছে।")
+
+    # ১২. /done কমান্ড (সবার জন্য)
+    elif command == "/done":
+        user_data = await users_col.find_one({"_id": user_id})
+        if not user_data or not user_data.get("batch_mode"):
+            return await message.reply_text("আপনি ব্যাচ মোডে নেই। নতুন ব্যাচ শুরু করতে `/batch` লিখুন।")
+        
+        files_list = user_data.get("batch_files", [])
+        if not files_list:
+            return await message.reply_text("আপনি কোনো ফাইল পাঠাননি। ব্যাচ মোড বন্ধ করতে `/cancel` লিখুন।")
+        
+        file_key = generate_id()
+        await files_col.insert_one({
+            "_id": file_key,
+            "files": files_list, 
+            "uploader_id": user_id,
+            "is_batch": True
+        })
+        
+        await users_col.update_one(
+            {"_id": user_id},
+            {"$unset": {"batch_mode": "", "batch_files": ""}}
+        )
+        
+        bot_username = (await client.get_me()).username
+        share_link = f"https://t.me/{bot_username}?start={file_key}"
+        
+        await message.reply_text(
+            f"✅ **আপনার ব্যাচ ফাইলটি সেভ হয়েছে!**\n\n📦 মোট ফাইলের সংখ্যা: `{len(files_list)}` টি\n🔗 **শেয়ার লিংক:**\n`{share_link}`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("শেয়ার করুন 🚀", url=f"https://telegram.me/share/url?url={share_link}")
+            ]])
+        )
+
+    # ১৩. অন্য যেকোনো ভুল কমান্ডের জন্য
+    else:
+        await message.reply_text("❌ **দুঃখিত, এই কমান্ডটি বটের জানা নেই।**\nসঠিক কমান্ডগুলো দেখতে মেনু চেক করুন।")
+
+# ================= FILE RECEIVER (Handling Batch & Single) =================
+
+@app.on_message((filters.document | filters.video | filters.audio | filters.photo) & filters.private)
+async def handle_incoming_files(client, message: Message):
+    user_id = message.from_user.id
+    user_data = await users_col.find_one({"_id": user_id})
+
+    file_name = "Unnamed File"
+    file_size = 0
+    
+    if message.document:
+        file_id, file_type = message.document.file_id, "document"
+        file_name = message.document.file_name or "Document"
+        file_size = message.document.file_size
+    elif message.video:
+        file_id, file_type = message.video.file_id, "video"
+        file_name = message.video.file_name or message.caption or "Video"
+        file_size = message.video.file_size
+    elif message.audio:
+        file_id, file_type = message.audio.file_id, "audio"
+        file_name = message.audio.file_name or "Audio"
+        file_size = message.audio.file_size
+    else:
+        file_id, file_type = (message.photo[0].file_id if isinstance(message.photo, list) else message.photo.file_id), "photo"
+        file_name = "Image File"
+        file_size = 0
+
+    file_item = {
+        "file_id": file_id, 
+        "type": file_type, 
+        "file_name": file_name, 
+        "file_size": file_size
+    }
+
+    if user_data and user_data.get("batch_mode"):
+        await users_col.update_one(
+            {"_id": user_id},
+            {"$push": {"batch_files": file_item}}
+        )
+        current_count = len(user_data.get("batch_files", [])) + 1
+        return await message.reply_text(f"📥 ফাইল যুক্ত হয়েছে (মোট: {current_count} টি)। পরবর্তী ফাইল পাঠান অথবা শেষ করতে `/done` লিখুন।")
+
+    file_key = generate_id()
+    await files_col.insert_one({
+        "_id": file_key,
+        "file_id": file_id,
+        "type": file_type,
+        "file_name": file_name,
+        "file_size": file_size,
+        "uploader_id": user_id,
+        "is_batch": False
+    })
+    
+    bot_username = (await client.get_me()).username
+    share_link = f"https://t.me/{bot_username}?start={file_key}"
+    
+    await message.reply_text(
+        f"📥 **ফাইল সেভ হয়েছে!**\n\n📁 **নাম:** `{file_name}`\n⚖️ **সাইজ:** `{get_readable_size(file_size)}`\n\n🔗 **লিংক:**\n`{share_link}`",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("শেয়ার করুন 🚀", url=f"https://telegram.me/share/url?url={share_link}")
+        ]])
+    )
 
 # ================= RUNNING BOTH SERVER & BOT =================
 
