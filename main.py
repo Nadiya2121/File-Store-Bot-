@@ -113,10 +113,19 @@ async def track_join_request(client, request: ChatJoinRequest):
             upsert=True
         )
 
-# ================= OWNER & ADMIN COMMANDS =================
+# ================= OWNER COMMANDS (addadmin, deladmin, adminlist) =================
 
-@app.on_message(filters.command("addadmin") & filters.user(OWNER_ID))
+@app.on_message(filters.command("addadmin") & filters.private)
 async def add_admin(client, message: Message):
+    user_id = message.from_user.id
+    if user_id != OWNER_ID:
+        return await message.reply_text(
+            f"❌ **এই কমান্ডটি ব্যবহারের অনুমতি আপনার নেই!**\n\n"
+            f"👤 আপনার আইডি: `{user_id}`\n"
+            f"👑 বটের মালিকের আইডি: `{OWNER_ID}`\n\n"
+            f"*(আপনার আইডিটি যদি ভুল হয়ে থাকে, তবে রেন্ডারের 'OWNER_ID' ভেরিয়েবলে আপনার সঠিক আইডিটি সেট করুন)*"
+        )
+    
     args = message.text.split()
     if len(args) < 2:
         return await message.reply_text("ব্যবহারের নিয়ম: `/addadmin <ইউজার_আইডি>`")
@@ -127,8 +136,12 @@ async def add_admin(client, message: Message):
     except ValueError:
         await message.reply_text("সঠিক আইডি প্রদান করুন।")
 
-@app.on_message(filters.command("deladmin") & filters.user(OWNER_ID))
+@app.on_message(filters.command("deladmin") & filters.private)
 async def del_admin(client, message: Message):
+    user_id = message.from_user.id
+    if user_id != OWNER_ID:
+        return await message.reply_text(f"❌ এই কমান্ডটি শুধুমাত্র বটের প্রধান মালিক ব্যবহার করতে পারবেন।\n👤 আপনার আইডি: `{user_id}`")
+    
     args = message.text.split()
     if len(args) < 2:
         return await message.reply_text("ব্যবহারের নিয়ম: `/deladmin <ইউজার_আইডি>`")
@@ -139,11 +152,70 @@ async def del_admin(client, message: Message):
     except ValueError:
         await message.reply_text("সঠিক আইডি প্রদান করুন।")
 
-# --- ডিলিট কমান্ড (এডমিনদের জন্য) ---
-@app.on_message(filters.command("delete"))
+@app.on_message(filters.command("adminlist") & filters.private)
+async def list_admins(client, message: Message):
+    user_id = message.from_user.id
+    if user_id != OWNER_ID:
+        return await message.reply_text(f"❌ এই কমান্ডটি শুধুমাত্র বটের প্রধান মালিক ব্যবহার করতে পারবেন।\n👤 আপনার আইডি: `{user_id}`")
+    
+    admins = admins_col.find({})
+    text = f"👑 **প্রধান মালিক:** `{OWNER_ID}`\n\n👮‍♂️ **সহকারী এডমিনবৃন্দ:**\n"
+    has_admin = False
+    async for admin in admins:
+        text += f"- `{admin['_id']}`\n"
+        has_admin = True
+    if not has_admin:
+        text += "*(কোনো সহকারী এডমিন যুক্ত নেই)*"
+    await message.reply_text(text)
+
+# ================= ADMIN COMMANDS (FSub, Delete, Auto-delete) =================
+
+@app.on_message(filters.command("addfsub") & filters.private)
+async def add_fsub(client, message: Message):
+    user_id = message.from_user.id
+    if not await is_admin(user_id):
+        return await message.reply_text(f"❌ **আপনি এই বটের এডমিন নন!**\n👤 আপনার আইডি: `{user_id}`")
+    
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        return await message.reply_text("ব্যবহারের নিয়ম: `/addfsub <চ্যানেল_আইডি> <লিংক>`")
+    await fsub_col.update_one({"_id": args[1]}, {"$set": {"invite_link": args[2]}}, upsert=True)
+    await message.reply_text("FSub চ্যানেল যুক্ত হয়েছে।")
+
+@app.on_message(filters.command("delfsub") & filters.private)
+async def del_fsub(client, message: Message):
+    user_id = message.from_user.id
+    if not await is_admin(user_id):
+        return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+    
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.reply_text("ব্যবহারের নিয়ম: `/delfsub <আইডি>`")
+    await fsub_col.delete_one({"_id": args[1]})
+    await message.reply_text("FSub চ্যানেল বাদ দেওয়া হয়েছে।")
+
+@app.on_message(filters.command("fsublist") & filters.private)
+async def list_fsub(client, message: Message):
+    user_id = message.from_user.id
+    if not await is_admin(user_id):
+        return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+    
+    channels = fsub_col.find({})
+    text = "**FSub চ্যানেল তালিকা:**\n\n"
+    has_channel = False
+    async for ch in channels:
+        text += f"ID: `{ch['_id']}`\nLink: {ch['invite_link']}\n\n"
+        has_channel = True
+    if not has_channel:
+        text += "*(কোনো FSub চ্যানেল যুক্ত নেই)*"
+    await message.reply_text(text)
+
+@app.on_message(filters.command("delete") & filters.private)
 async def delete_file(client, message: Message):
-    if not await is_admin(message.from_user.id):
-        return
+    user_id = message.from_user.id
+    if not await is_admin(user_id):
+        return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+    
     args = message.text.split()
     if len(args) < 2:
         return await message.reply_text("ব্যবহারের নিয়ম:\n`/delete <ফাইল_কী>`")
@@ -155,11 +227,12 @@ async def delete_file(client, message: Message):
     else:
         await message.reply_text("এই ফাইল কী-টি ডাটাবেজে পাওয়া যায়নি।")
 
-# --- অটো-ডিলিট টাইম সেট করার কমান্ড (এডমিনদের জন্য) ---
-@app.on_message(filters.command("setautodelete"))
+@app.on_message(filters.command("setautodelete") & filters.private)
 async def set_autodelete(client, message: Message):
-    if not await is_admin(message.from_user.id):
-        return
+    user_id = message.from_user.id
+    if not await is_admin(user_id):
+        return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
+    
     args = message.text.split()
     if len(args) < 2:
         return await message.reply_text("ব্যবহারের নিয়ম:\n`/setautodelete <মিনিট>`\n(বন্ধ করতে `/setautodelete 0` লিখুন)")
@@ -176,27 +249,6 @@ async def set_autodelete(client, message: Message):
             await message.reply_text("অটো-ডিলিট সিস্টেম বন্ধ করা হয়েছে।")
     except ValueError:
         await message.reply_text("দয়া করে সঠিক মিনিট সংখ্যায় লিখুন।")
-
-# --- FSub কমান্ডসমূহ ---
-@app.on_message(filters.command("addfsub"))
-async def add_fsub(client, message: Message):
-    if not await is_admin(message.from_user.id):
-        return
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        return await message.reply_text("ব্যবহারের নিয়ম: `/addfsub <চ্যানেল_আইডি> <লিংক>`")
-    await fsub_col.update_one({"_id": args[1]}, {"$set": {"invite_link": args[2]}}, upsert=True)
-    await message.reply_text("FSub চ্যানেল যুক্ত হয়েছে।")
-
-@app.on_message(filters.command("delfsub"))
-async def del_fsub(client, message: Message):
-    if not await is_admin(message.from_user.id):
-        return
-    args = message.text.split()
-    if len(args) < 2:
-        return await message.reply_text("ব্যবহারের নিয়ম: `/delfsub <আইডি>`")
-    await fsub_col.delete_one({"_id": args[1]})
-    await message.reply_text("FSub চ্যানেল বাদ দেওয়া হয়েছে।")
 
 # ================= MULTI-FILE BATCH SYSTEM =================
 
@@ -336,11 +388,11 @@ async def start_handler(client, message: Message):
 
     args = message.text.split()
     
-    # --- সাধারণ স্টার্ট মেসেজ (পোস্টার ও আকর্ষণীয় বাটন সহ) ---
+    # --- সাধারণ স্টার্ট মেসেজ ---
     if len(args) < 2:
         start_caption = (
             "👋 **হ্যালো! আমি একটি অত্যন্ত দ্রুতগতির আধুনিক ফাইল স্টোর বট।**\n\n"
-            "📂 এখানে আপনি যেকোনো মুভি, serie বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
+            "📂 এখানে আপনি যেকোনো মুভি, সিরিজ বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
             "✨ **ফিচারসমূহ:**\n"
             "• মাল্টি-ফাইল ব্যাচ লিংক সাপোর্ট (`/batch`)\n"
             "• অটো-ডিলিট সিস্টেম প্রটেকশন\n"
@@ -348,7 +400,6 @@ async def start_handler(client, message: Message):
             "📢 নিচের বাটনগুলো ব্যবহার করে আমাদের সাথে যুক্ত থাকতে পারেন:"
         )
         
-        # প্রফেশনাল স্টার্ট বাটন (user_id-এর পরিবর্তে tg://user?id স্কিম ব্যবহার করা হয়েছে)
         start_buttons = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📢 আপডেট চ্যানেল", url="https://t.me/TGLinkBase"), 
@@ -367,7 +418,6 @@ async def start_handler(client, message: Message):
             )
         except Exception as e:
             logger.error(f"Failed to send photo: {e}")
-            # কোনো কারণে ফটো সেন্ড না হলে টেক্সট হিসেবে পাঠানো হবে
             return await message.reply_text(
                 text=start_caption,
                 reply_markup=start_buttons
@@ -415,11 +465,10 @@ async def start_handler(client, message: Message):
     # ফাইল বা ব্যাচ ডেলিভারি করা
     file_data = await files_col.find_one({"_id": file_key})
     if file_data:
-        autodelete_time = await get_autodelete_time() # ডিলিট টাইম চেক করা হচ্ছে
-        sent_messages = [] # পাঠানো মেসেজগুলোর আইডি ট্র্যাক করার জন্য
+        autodelete_time = await get_autodelete_time()
+        sent_messages = []
         
         try:
-            # যদি অটো-ডিলিট অন থাকে
             if autodelete_time > 0:
                 warning_msg = await message.reply_text(
                     f"⚠️ **নিরাপত্তাজনিত কারণে ফাইলটি `{autodelete_time}` মিনিট পর স্বয়ংক্রিয়ভাবে ডিলিট হয়ে যাবে।**\n"
@@ -427,7 +476,6 @@ async def start_handler(client, message: Message):
                 )
                 sent_messages.append(warning_msg.id)
 
-            # ব্যাচ ফাইল হলে
             if file_data.get("is_batch"):
                 for file_item in file_data["files"]:
                     file_name = file_item.get("file_name", "Unnamed File")
@@ -442,7 +490,6 @@ async def start_handler(client, message: Message):
                     sent_messages.append(sent_msg.id)
                     await asyncio.sleep(0.5)
             else:
-                # সিঙ্গেল ফাইল হলে
                 file_name = file_data.get("file_name", "Unnamed File")
                 file_size = file_data.get("file_size", 0)
                 caption_text = f"📁 **নাম:** `{file_name}`\n⚖️ **সাইজ:** `{get_readable_size(file_size)}`"
@@ -454,7 +501,6 @@ async def start_handler(client, message: Message):
                 )
                 sent_messages.append(sent_msg.id)
 
-            # অটো-ডিলিট টাস্ক শিডিউল করা
             if autodelete_time > 0 and sent_messages:
                 asyncio.create_task(delete_after_delay(message.chat.id, sent_messages, autodelete_time))
 
