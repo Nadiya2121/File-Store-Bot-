@@ -9,11 +9,11 @@ from pyrogram.errors import UserNotParticipant
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # --- কনফিগারেশন ---
-API_ID = int(os.environ.get("API_ID", "123456")) 
-API_HASH = os.environ.get("API_HASH", "your_api_hash") 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token") 
-MONGO_URL = os.environ.get("MONGO_URL", "your_mongodb_url") 
-OWNER_ID = int(os.environ.get("OWNER_ID", "123456789")) 
+API_ID = int(os.environ.get("API_ID", "29462738")) 
+API_HASH = os.environ.get("API_HASH", "297f51aaab99720a09e80273628c3c24") 
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8787371353:AAEUE0vK2siElnew2LnaAs-3djZPxxjFKpo") 
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://hepemo5263:hepemo5263@cluster0.5vugv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0") 
+OWNER_ID = int(os.environ.get("OWNER_ID", "7409347279")) 
 PORT = int(os.environ.get("PORT", "8080")) # Render/Koyeb-এর পোর্ট
 
 # বট ও ডাটাবেজ ইনিশিয়ালাইজেশন
