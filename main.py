@@ -2,11 +2,17 @@ import os
 import asyncio
 import random
 import string
+import logging
+import traceback
 from aiohttp import web
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, ChatJoinRequest
 from pyrogram.errors import UserNotParticipant
 from motor.motor_asyncio import AsyncIOMotorClient
+
+# বেসিক লগিং কনফিগারেশন (যাতে রেন্ডারের লগে সব ডিটেইল দেখা যায়)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- কনফিগারেশন ---
 API_ID = int(os.environ.get("API_ID", "29462738")) 
@@ -16,8 +22,14 @@ MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://hepemo5263:hepemo5263@clu
 OWNER_ID = int(os.environ.get("OWNER_ID", "7409347279")) 
 PORT = int(os.environ.get("PORT", "8080")) # Render/Koyeb-এর পোর্ট
 
-# বট ও ডাটাবেজ ইনিশিয়ালাইজেশন
-app = Client("PublicBatchStoreBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# বট ও ডাটাবেজ ইনিশিয়ালাইজেশন (সেশন লক এড়াতে in_memory=True যুক্ত করা হয়েছে)
+app = Client(
+    "PublicBatchStoreBot", 
+    api_id=API_ID, 
+    api_hash=API_HASH, 
+    bot_token=BOT_TOKEN,
+    in_memory=True
+)
 db_client = AsyncIOMotorClient(MONGO_URL)
 db = db_client["PublicBatchStoreDB"]
 
@@ -51,7 +63,7 @@ async def start_webserver():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"Web server started on port {PORT}")
+    logger.info(f"Web server started on port {PORT}")
 
 # ================= JOIN REQUEST TRACKING =================
 
@@ -173,7 +185,7 @@ async def done_batch(client, message: Message):
     # ডাটাবেজে ব্যাচ ফাইল লিস্ট সেভ করা
     await files_col.insert_one({
         "_id": file_key,
-        "files": files_list, # ফাইলের আইডি এবং টাইপের অ্যারে
+        "files": files_list, 
         "uploader_id": user_id,
         "is_batch": True
     })
@@ -301,7 +313,6 @@ async def start_handler(client, message: Message):
     file_data = await files_col.find_one({"_id": file_key})
     if file_data:
         try:
-            # যদি এটি ব্যাচ ফাইল হয়
             if file_data.get("is_batch"):
                 await message.reply_text(f"📦 আপনার ব্যাচে মোট `{len(file_data['files'])}` টি ফাইল রয়েছে। ফাইলগুলো পাঠানো হচ্ছে...")
                 for file_item in file_data["files"]:
@@ -309,9 +320,8 @@ async def start_handler(client, message: Message):
                         chat_id=message.chat.id,
                         file_id=file_item["file_id"]
                     )
-                    await asyncio.sleep(0.5) # ফ্লাড এড়াতে সাময়িক বিরতি
+                    await asyncio.sleep(0.5)
             else:
-                # সিঙ্গেল ফাইল
                 await client.send_cached_media(
                     chat_id=message.chat.id,
                     file_id=file_data["file_id"],
@@ -325,13 +335,26 @@ async def start_handler(client, message: Message):
 # ================= RUNNING BOTH SERVER & BOT =================
 
 async def run_bot():
+    # বট স্টার্ট করা
     await app.start()
-    print("Telegram bot started successfully!")
+    logger.info("Telegram bot started successfully!")
+    
     # ওয়েব সার্ভার ব্যাকগ্রাউন্ডে চালু করা
     await start_webserver()
-    # বটকে সচল রাখা
-    await asyncio.Event().wait()
+    
+    # সিগন্যাল হ্যান্ডলিং সহ বট সচল রাখা
+    await idle()
+    
+    # বন্ধ করার সময় ক্লিনআপ
+    await app.stop()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(run_bot())
+    try:
+        # আধুনিক asyncio.run() ব্যবহার করা হয়েছে যা পাইথন ৩.১০+ এ সবচেয়ে নিরাপদ
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user.")
+    except Exception as e:
+        # কোনো কারণে ক্র্যাশ করলে রেন্ডারের কনসোলে যেন সম্পূর্ণ ট্র্যাকিং দেখা যায়
+        logger.error("An error occurred during bot execution:")
+        traceback.print_exc()
