@@ -2,14 +2,12 @@ import os
 import asyncio
 
 # --- Python 3.12+ / 3.14 Pyrogram ইভেন্ট লুপ ক্র্যাশ ফিক্স (হটফিক্স) ---
-# Pyrogram ইমপোর্ট করার আগেই এই লুপটি তৈরি এবং সেট করতে হবে
 try:
     loop = asyncio.get_event_loop()
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-# এখন অন্যান্য প্রয়োজনীয় লাইব্রেরি ও Pyrogram ইমপোর্ট করা হচ্ছে
 import random
 import string
 import logging
@@ -30,9 +28,12 @@ API_HASH = os.environ.get("API_HASH", "297f51aaab99720a09e80273628c3c24")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8787371353:AAEUE0vK2siElnew2LnaAs-3djZPxxjFKpo") 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://hepemo5263:hepemo5263@cluster0.5vugv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0") 
 OWNER_ID = int(os.environ.get("OWNER_ID", "7409347279")) 
-PORT = int(os.environ.get("PORT", "8080")) # Render/Koyeb-এর পোর্ট
+PORT = int(os.environ.get("PORT", "8080")) 
 
-# বট ও ডাটাবেজ ইনিশিয়ালাইজেশন (in_memory=True যুক্ত করা হয়েছে)
+# থাম্বনেইল/পোস্টার ইমেজ লিংক (আপনি চাইলে এটি পরিবর্তন করতে পারেন)
+START_PIC = os.environ.get("START_PIC", "https://files.catbox.moe/4rpz79.jpg")
+
+# বট ও ডাটাবেজ ইনিশিয়ালাইজেশন
 app = Client(
     "PublicBatchStoreBot", 
     api_id=API_ID, 
@@ -49,10 +50,20 @@ users_col = db["users"]
 fsub_col = db["fsub_channels"]
 requests_col = db["join_requests"]
 admins_col = db["admins"]
+settings_col = db["settings"]
 
 # ইউনিক আইডি জেনারেটর
 def generate_id():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+
+# সাইজ রিডেবল করার ফাংশন (Bytes to MB/GB)
+def get_readable_size(size_in_bytes):
+    if not size_in_bytes:
+        return "Unknown"
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_in_bytes < 1024.0:
+            return f"{size_in_bytes:.2f} {unit}"
+        size_in_bytes /= 1024.0
 
 # এডমিন চেক করার হেল্পার ফাংশন
 async def is_admin(user_id: int) -> bool:
@@ -61,7 +72,22 @@ async def is_admin(user_id: int) -> bool:
     admin = await admins_col.find_one({"_id": user_id})
     return admin is not None
 
-# ================= AIOHTTP WEB SERVER (For Render/Koyeb) =================
+# অটো-ডিলিট টাইম পাওয়ার হেল্পার
+async def get_autodelete_time():
+    setting = await settings_col.find_one({"_id": "autodelete_config"})
+    if setting:
+        return setting.get("time", 0) # মিনিটে রিটার্ন করবে, ০ মানে বন্ধ
+    return 0
+
+# মেসেজ ডিলিট করার ব্যাকগ্রাউন্ড টাস্ক
+async def delete_after_delay(chat_id: int, message_ids: list, delay_minutes: int):
+    await asyncio.sleep(delay_minutes * 60)
+    try:
+        await app.delete_messages(chat_id, message_ids)
+    except Exception as e:
+        logger.error(f"Error auto-deleting messages: {e}")
+
+# ================= AIOHTTP WEB SERVER =================
 
 async def handle_root(request):
     return web.Response(text="Bot Web Server is running perfectly!")
@@ -73,7 +99,6 @@ async def start_webserver():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logger.info(f"Web server started on port {PORT}")
 
 # ================= JOIN REQUEST TRACKING =================
 
@@ -125,13 +150,34 @@ async def delete_file(client, message: Message):
     
     file_key = args[1]
     result = await files_col.delete_one({"_id": file_key})
-    
     if result.deleted_count > 0:
         await message.reply_text("ফাইল/ব্যাচ ডাটাবেজ থেকে স্থায়ীভাবে ডিলিট করা হয়েছে।")
     else:
         await message.reply_text("এই ফাইল কী-টি ডাটাবেজে পাওয়া যায়নি।")
 
-# --- FSub অ্যাড/রিমুভ কমান্ডসমূহ ---
+# --- অটো-ডিলিট টাইম সেট করার কমান্ড (এডমিনদের জন্য) ---
+@app.on_message(filters.command("setautodelete"))
+async def set_autodelete(client, message: Message):
+    if not await is_admin(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.reply_text("ব্যবহারের নিয়ম:\n`/setautodelete <মিনিট>`\n(বন্ধ করতে `/setautodelete 0` লিখুন)")
+    try:
+        minutes = int(args[1])
+        await settings_col.update_one(
+            {"_id": "autodelete_config"},
+            {"$set": {"time": minutes}},
+            upsert=True
+        )
+        if minutes > 0:
+            await message.reply_text(f"অটো-ডিলিট সফলভাবে `{minutes}` মিনিটের জন্য সেট করা হয়েছে।")
+        else:
+            await message.reply_text("অটো-ডিলিট সিস্টেম বন্ধ করা হয়েছে।")
+    except ValueError:
+        await message.reply_text("দয়া করে সঠিক মিনিট সংখ্যায় লিখুন।")
+
+# --- FSub কমান্ডসমূহ ---
 @app.on_message(filters.command("addfsub"))
 async def add_fsub(client, message: Message):
     if not await is_admin(message.from_user.id):
@@ -154,7 +200,6 @@ async def del_fsub(client, message: Message):
 
 # ================= MULTI-FILE BATCH SYSTEM =================
 
-# ব্যাচ মোড শুরু করার কমান্ড
 @app.on_message(filters.command("batch") & filters.private)
 async def start_batch(client, message: Message):
     user_id = message.from_user.id
@@ -164,10 +209,9 @@ async def start_batch(client, message: Message):
         upsert=True
     )
     await message.reply_text(
-        "📥 **ব্যাচ মোড চালু হয়েছে!**\n\nএখন একের পর এক আপনার ফাইলগুলো পাঠাতে থাকুন। সব পাঠানো শেষ হলে `/done` লিখে কমান্ড দিন।\n\n*বাতিল করতে চাইলে `/cancel` লিখুন।*"
+        "📥 **ব্যাচ মোড চালু হয়েছে!**\n\nএখন একে একে আপনার ফাইলগুলো পাঠাতে থাকুন। সব পাঠানো শেষ হলে `/done` লিখে কমান্ড দিন।\n\n*বাতিল করতে চাইলে `/cancel` লিখুন।*"
     )
 
-# ব্যাচ মোড বাতিল করার কমান্ড
 @app.on_message(filters.command("cancel") & filters.private)
 async def cancel_batch(client, message: Message):
     user_id = message.from_user.id
@@ -177,22 +221,19 @@ async def cancel_batch(client, message: Message):
     )
     await message.reply_text("ব্যাচ মোড বাতিল করা হয়েছে।")
 
-# ব্যাচ সেভ করার কমান্ড
 @app.on_message(filters.command("done") & filters.private)
 async def done_batch(client, message: Message):
     user_id = message.from_user.id
     user_data = await users_col.find_one({"_id": user_id})
     
     if not user_data or not user_data.get("batch_mode"):
-        return await message.reply_text("আপনি ব্যাচ মোডে নেই। নতুন ব্যাচ শুরু করতে `/batch` লিখুন。")
+        return await message.reply_text("আপনি ব্যাচ মোডে নেই। নতুন ব্যাচ শুরু করতে `/batch` লিখুন।")
     
     files_list = user_data.get("batch_files", [])
     if not files_list:
         return await message.reply_text("আপনি কোনো ফাইল পাঠাননি। ব্যাচ মোড বন্ধ করতে `/cancel` লিখুন।")
     
     file_key = generate_id()
-    
-    # ডাটাবেজে ব্যাচ ফাইল লিস্ট সেভ করা
     await files_col.insert_one({
         "_id": file_key,
         "files": files_list, 
@@ -200,7 +241,6 @@ async def done_batch(client, message: Message):
         "is_batch": True
     })
     
-    # ইউজারের ব্যাচ মোড স্ট্যাটাস রিসেট করা
     await users_col.update_one(
         {"_id": user_id},
         {"$unset": {"batch_mode": "", "batch_files": ""}}
@@ -223,17 +263,33 @@ async def handle_incoming_files(client, message: Message):
     user_id = message.from_user.id
     user_data = await users_col.find_one({"_id": user_id})
 
-    # ফাইলের তথ্য সংগ্রহ
+    # ফাইলের তথ্য, আসল নাম ও সাইজ সংগ্রহ করা হচ্ছে
+    file_name = "Unnamed File"
+    file_size = 0
+    
     if message.document:
         file_id, file_type = message.document.file_id, "document"
+        file_name = message.document.file_name or "Document"
+        file_size = message.document.file_size
     elif message.video:
         file_id, file_type = message.video.file_id, "video"
+        file_name = message.video.file_name or message.caption or "Video"
+        file_size = message.video.file_size
     elif message.audio:
         file_id, file_type = message.audio.file_id, "audio"
+        file_name = message.audio.file_name or "Audio"
+        file_size = message.audio.file_size
     else:
         file_id, file_type = (message.photo[0].file_id if isinstance(message.photo, list) else message.photo.file_id), "photo"
+        file_name = "Image File"
+        file_size = 0
 
-    file_item = {"file_id": file_id, "type": file_type}
+    file_item = {
+        "file_id": file_id, 
+        "type": file_type, 
+        "file_name": file_name, 
+        "file_size": file_size
+    }
 
     # ইউজার যদি ব্যাচ মোডে থাকে
     if user_data and user_data.get("batch_mode"):
@@ -250,6 +306,8 @@ async def handle_incoming_files(client, message: Message):
         "_id": file_key,
         "file_id": file_id,
         "type": file_type,
+        "file_name": file_name,
+        "file_size": file_size,
         "uploader_id": user_id,
         "is_batch": False
     })
@@ -258,7 +316,7 @@ async def handle_incoming_files(client, message: Message):
     share_link = f"https://t.me/{bot_username}?start={file_key}"
     
     await message.reply_text(
-        f"📥 **ফাইল সেভ হয়েছে!**\n\n🔗 **লিংক:**\n`{share_link}`",
+        f"📥 **ফাইল সেভ হয়েছে!**\n\n📁 **নাম:** `{file_name}`\n⚖️ **সাইজ:** `{get_readable_size(file_size)}`\n\n🔗 **লিংক:**\n`{share_link}`",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("শেয়ার করুন 🚀", url=f"https://telegram.me/share/url?url={share_link}")
         ]])
@@ -277,8 +335,42 @@ async def start_handler(client, message: Message):
     )
 
     args = message.text.split()
+    
+    # --- সাধারণ স্টার্ট মেসেজ (পোস্টার ও আকর্ষণীয় বাটন সহ) ---
     if len(args) < 2:
-        return await message.reply_text("হ্যালো! আমি একটি মাল্টি-ফাইল স্টোর বট। একাধিক ফাইলের একটি লিংক তৈরি করতে প্রথমে `/batch` কমান্ড দিন।")
+        start_caption = (
+            "👋 **হ্যালো! আমি একটি অত্যন্ত দ্রুতগতির আধুনিক ফাইল স্টোর বট।**\n\n"
+            "📂 এখানে আপনি যেকোনো মুভি, সিরিজ বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
+            "✨ **ফিচারসমূহ:**\n"
+            "• মাল্টি-ফাইল ব্যাচ লিংক সাপোর্ট (`/batch`)\n"
+            "• অটো-ডিলিট সিস্টেম প্রটেকশন\n"
+            "• আনলিমিটেড স্টোরেজ ব্যাকআপ\n\n"
+            "📢 নিচের বাটনগুলো ব্যবহার করে আমাদের সাথে যুক্ত থাকতে পারেন:"
+        )
+        
+        # প্রফেশনাল স্টার্ট বাটন
+        start_buttons = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📢 আপডেট চ্যানেল", url="https://t.me/TGLinkBase"), # আপনার চ্যানেল লিংক বসান
+                InlineKeyboardButton("💬 সাপোর্ট গ্রুপ", url="https://t.me/TGLinkBase") # আপনার গ্রুপ লিংক বসান
+            ],
+            [
+                InlineKeyboardButton("👨‍💻 ডেভেলপার আইডি", user_id=OWNER_ID)
+            ]
+        ])
+        
+        try:
+            return await message.reply_photo(
+                photo=START_PIC,
+                caption=start_caption,
+                reply_markup=start_buttons
+            )
+        except Exception:
+            # কোনো কারণে ফটো সেন্ড না হলে টেক্সট হিসেবে পাঠানো হবে
+            return await message.reply_text(
+                text=start_caption,
+                reply_markup=start_buttons
+            )
 
     file_key = args[1]
 
@@ -322,21 +414,49 @@ async def start_handler(client, message: Message):
     # ফাইল বা ব্যাচ ডেলিভারি করা
     file_data = await files_col.find_one({"_id": file_key})
     if file_data:
+        autodelete_time = await get_autodelete_time() # ডিলিট টাইম চেক করা হচ্ছে
+        sent_messages = [] # পাঠানো মেসেজগুলোর আইডি ট্র্যাক করার জন্য
+        
         try:
+            # যদি অটো-ডিলিট অন থাকে
+            if autodelete_time > 0:
+                warning_msg = await message.reply_text(
+                    f"⚠️ **নিরাপত্তাজনিত কারণে ফাইলটি `{autodelete_time}` মিনিট পর স্বয়ংক্রিয়ভাবে ডিলিট হয়ে যাবে।**\n"
+                    "দয়া করে দ্রুত অন্য কোথাও ফরোয়ার্ড বা সেভ করে রাখুন।"
+                )
+                sent_messages.append(warning_msg.id)
+
+            # ব্যাচ ফাইল হলে
             if file_data.get("is_batch"):
-                await message.reply_text(f"📦 আপনার ব্যাচে মোট `{len(file_data['files'])}` টি ফাইল রয়েছে। ফাইলগুলো পাঠানো হচ্ছে...")
                 for file_item in file_data["files"]:
-                    await client.send_cached_media(
+                    file_name = file_item.get("file_name", "Unnamed File")
+                    file_size = file_item.get("file_size", 0)
+                    caption_text = f"📁 **নাম:** `{file_name}`\n⚖️ **সাইজ:** `{get_readable_size(file_size)}`"
+                    
+                    sent_msg = await client.send_cached_media(
                         chat_id=message.chat.id,
-                        file_id=file_item["file_id"]
+                        file_id=file_item["file_id"],
+                        caption=caption_text
                     )
+                    sent_messages.append(sent_msg.id)
                     await asyncio.sleep(0.5)
             else:
-                await client.send_cached_media(
+                # সিঙ্গেল ফাইল হলে
+                file_name = file_data.get("file_name", "Unnamed File")
+                file_size = file_data.get("file_size", 0)
+                caption_text = f"📁 **নাম:** `{file_name}`\n⚖️ **সাইজ:** `{get_readable_size(file_size)}`"
+                
+                sent_msg = await client.send_cached_media(
                     chat_id=message.chat.id,
                     file_id=file_data["file_id"],
-                    caption="এখানে আপনার ফাইলটি দেওয়া হলো।"
+                    caption=caption_text
                 )
+                sent_messages.append(sent_msg.id)
+
+            # অটো-ডিলিট টাস্ক শিডিউল করা
+            if autodelete_time > 0 and sent_messages:
+                asyncio.create_task(delete_after_delay(message.chat.id, sent_messages, autodelete_time))
+
         except Exception as e:
             await message.reply_text(f"ফাইল পাঠাতে ত্রুটি হয়েছে: {e}")
     else:
@@ -345,22 +465,14 @@ async def start_handler(client, message: Message):
 # ================= RUNNING BOTH SERVER & BOT =================
 
 async def run_bot():
-    # বট স্টার্ট করা
     await app.start()
     logger.info("Telegram bot started successfully!")
-    
-    # ওয়েব সার্ভার ব্যাকগ্রাউন্ডে চালু করা
     await start_webserver()
-    
-    # সিগন্যাল হ্যান্ডলিং সহ বট সচল রাখা
     await idle()
-    
-    # বন্ধ করার সময় ক্লিনআপ
     await app.stop()
 
 if __name__ == "__main__":
     try:
-        # ইতিপূর্বে তৈরি লুপটি ব্যবহার করে বট রান করা হচ্ছে
         loop.run_until_complete(run_bot())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user.")
