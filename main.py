@@ -1,17 +1,11 @@
 import os
 import asyncio
-
-# --- Python 3.12+ / 3.14 Pyrogram ইভেন্ট লুপ ক্র্যাশ ফিক্স (হটফিক্স) ---
-try:
-    loop = asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
 import random
 import string
 import logging
 import traceback
+import certifi  # ক্লাউড প্ল্যাটফর্মে MongoDB কানেকশন সিকিউর করার জন্য
+
 from aiohttp import web
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, ChatJoinRequest
@@ -28,12 +22,12 @@ API_HASH = os.environ.get("API_HASH", "297f51aaab99720a09e80273628c3c24")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8787371353:AAEUE0vK2siElnew2LnaAs-3djZPxxjFKpo") 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://hepemo5263:hepemo5263@cluster0.5vugv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0") 
 OWNER_ID = int(os.environ.get("OWNER_ID", "8297458824")) 
-PORT = int(os.environ.get("PORT", "8000")) # Koyeb ও Render ওয়েব সার্ভিসের জন্য ডিফল্ট পোর্ট ৮০০০ করা হয়েছে
+PORT = int(os.environ.get("PORT", "8000")) 
 
 # থাম্বনেইল/পোস্টার ইমেজ লিংক
 START_PIC = os.environ.get("START_PIC", "https://files.catbox.moe/4rpz79.jpg")
 
-# বট ও ডাটাবেজ ইনিশিয়ালাইজেশন
+# বট ইনিশিয়ালাইজেশন
 app = Client(
     "PublicBatchStoreBot", 
     api_id=API_ID, 
@@ -41,8 +35,13 @@ app = Client(
     bot_token=BOT_TOKEN,
     in_memory=True
 )
-db_client = AsyncIOMotorClient(MONGO_URL)
-db = db_client["PublicBatchStoreDB"]
+
+# ডেটাবেজ কানেকশনে certifi যুক্ত করা হয়েছে (SSL হ্যান্ডশেক ফিক্স)
+try:
+    db_client = AsyncIOMotorClient(MONGO_URL, tlsCAFile=certifi.where())
+    db = db_client["PublicBatchStoreDB"]
+except Exception as e:
+    logger.error(f"MongoDB connection failed: {e}")
 
 # ডাটাবেজ কালেকশনস
 files_col = db["files"]
@@ -56,7 +55,7 @@ settings_col = db["settings"]
 def generate_id():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=8))
 
-# সাইজ রিডেবল করার ফাংশন (Bytes to MB/GB)
+# সাইজ রিডেবল করার ফাংশন
 def get_readable_size(size_in_bytes):
     if not size_in_bytes:
         return "Unknown"
@@ -76,8 +75,19 @@ async def is_admin(user_id: int) -> bool:
 async def get_autodelete_time():
     setting = await settings_col.find_one({"_id": "autodelete_config"})
     if setting:
-        return setting.get("time", 0) # মিনিটে রিটার্ন করবে, ০ মানে বন্ধ
+        return setting.get("time", 0)
     return 0
+
+# আইডি কনভার্ট করার হেল্পার ফাংশন
+def parse_chat_id(chat_id_str: str):
+    """স্ট্রিং আইডিকে ইন্টিজারে রূপান্তর করে, ইউজারনেম হলে স্ট্রিং-ই রাখে"""
+    chat_id_str = chat_id_str.strip()
+    if chat_id_str.startswith("-") or chat_id_str.isdigit():
+        try:
+            return int(chat_id_str)
+        except ValueError:
+            return chat_id_str
+    return chat_id_str
 
 # Message deletion background task
 async def delete_after_delay(chat_id: int, message_ids: list, delay_minutes: int):
@@ -90,7 +100,7 @@ async def delete_after_delay(chat_id: int, message_ids: list, delay_minutes: int
 # ================= AIOHTTP WEB SERVER =================
 
 async def handle_root(request):
-    return web.Response(text="Bot Web Server is running perfectly!")
+    return web.Response(text="Bot Web Server is running!")
 
 async def start_webserver():
     web_app = web.Application()
@@ -99,6 +109,7 @@ async def start_webserver():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
+    logger.info(f"Web server started on port {PORT}")
 
 # ================= JOIN REQUEST TRACKING =================
 
@@ -116,16 +127,17 @@ async def track_join_request(client, request: ChatJoinRequest):
 # ================= START COMMAND LOGIC HELPERS =================
 
 async def process_start_command(client, message: Message, args):
-    user_id = message.from_user.id
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    username = message.from_user.username if message.from_user else None
     
     # ইউজার ডাটাবেজে সংরক্ষণ
     await users_col.update_one(
         {"_id": user_id},
-        {"$set": {"username": message.from_user.username}},
+        {"$set": {"username": username}},
         upsert=True
     )
 
-    # সাধারণ স্টার্ট মেসেজ (args না থাকলে)
+    # সাধারণ স্টার্ট মেসেজ
     if not args:
         start_caption = (
             "👋 **হ্যালো! আমি একটি অত্যন্ত দ্রুতগতির আধুনিক ফাইল স্টোর বট।**\n\n"
@@ -169,14 +181,16 @@ async def process_start_command(client, message: Message, args):
     async for channel in fsub_channels:
         ch_id = channel["_id"]
         is_accessible = False
+        parsed_id = parse_chat_id(ch_id)
+        
         try:
-            member = await client.get_chat_member(chat_id=int(ch_id), user_id=user_id)
+            member = await client.get_chat_member(chat_id=parsed_id, user_id=user_id)
             if member.status in ["member", "administrator", "creator"]:
                 is_accessible = True
         except UserNotParticipant:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Error checking chat member for {ch_id}: {e}")
 
         if not is_accessible:
             req = await requests_col.find_one({"user_id": user_id, "channel_id": ch_id})
@@ -191,7 +205,8 @@ async def process_start_command(client, message: Message, args):
         for index, ch in enumerate(unjoined_channels, start=1):
             buttons.append([InlineKeyboardButton(f"চ্যানেল {index}-এ জয়েন রিকোয়েস্ট পাঠান", url=ch["invite_link"])])
         
-        try_again_url = f"https://t.me/{(await client.get_me()).username}?start={file_key}"
+        bot_info = await client.get_me()
+        try_again_url = f"https://t.me/{bot_info.username}?start={file_key}"
         buttons.append([InlineKeyboardButton("আমি রিকোয়েস্ট পাঠিয়েছি (ফাইল দিন)", url=try_again_url)])
         
         return await message.reply_text(
@@ -246,28 +261,26 @@ async def process_start_command(client, message: Message, args):
     else:
         await message.reply_text("❌ ফাইল বা ব্যাচটি ডাটাবেজে পাওয়া যায়নি বা ডিলিট করা হয়েছে।")
 
-# ================= UNIFIED COMMAND ROUTER (100% Reliable) =================
+# ================= UNIFIED COMMAND ROUTER =================
 
 @app.on_message(filters.text & filters.private)
 async def unified_command_handler(client, message: Message):
     text = message.text.strip()
     
-    # মেসেজ যদি স্লাশ (/) দিয়ে শুরু না হয়, তবে এটি কোনো কমান্ড নয়
     if not text.startswith("/"):
         return 
 
-    # কমান্ড এবং আর্গুমেন্ট আলাদা করা
     parts = text.split()
-    command = parts[0].lower() # ছোট হাতের অক্ষরে রূপান্তর (কেস-সেন্সিটিভিটি ফিক্স)
+    command = parts[0].lower()
     args = parts[1:]
     
-    user_id = message.from_user.id
+    user_id = message.from_user.id if message.from_user else message.chat.id
 
     # ১. /start কমান্ড
     if command == "/start":
         await process_start_command(client, message, args)
 
-    # ২. /addadmin কমান্ড (মালিকের জন্য)
+    # ২. /addadmin কমান্ড
     elif command == "/addadmin":
         if user_id != OWNER_ID:
             return await message.reply_text(
@@ -284,7 +297,7 @@ async def unified_command_handler(client, message: Message):
         except ValueError:
             await message.reply_text("দয়া করে সঠিক সংখ্যায় আইডি দিন।")
 
-    # ৩. /deladmin কমান্ড (মালিকের জন্য)
+    # ৩. /deladmin কমান্ড
     elif command == "/deladmin":
         if user_id != OWNER_ID:
             return await message.reply_text(f"❌ এই কমান্ডটি ব্যবহারের অনুমতি আপনার নেই।\n👤 আপনার আইডি: `{user_id}`")
@@ -297,21 +310,21 @@ async def unified_command_handler(client, message: Message):
         except ValueError:
             await message.reply_text("দয়া করে সঠিক সংখ্যায় আইডি দিন।")
 
-    # ৪. /adminlist কমান্ড (মালিকের জন্য)
+    # ৪. /adminlist কমান্ড
     elif command == "/adminlist":
         if user_id != OWNER_ID:
             return await message.reply_text(f"❌ এই কমান্ডটি ব্যবহারের অনুমতি আপনার নেই।\n👤 আপনার আইডি: `{user_id}`")
         admins = admins_col.find({})
-        text = f"👑 **প্রধান মালিক:** `{OWNER_ID}`\n\n👮‍♂️ **সহকারী এডমিনবৃন্দ:**\n"
+        text_msg = f"👑 **প্রধান মালিক:** `{OWNER_ID}`\n\n👮‍♂️ **সহকারী এডমিনবৃন্দ:**\n"
         has_admin = False
         async for admin in admins:
-            text += f"- `{admin['_id']}`\n"
+            text_msg += f"- `{admin['_id']}`\n"
             has_admin = True
         if not has_admin:
-            text += "*(কোনো সহকারী এডমিন যুক্ত নেই)*"
-        await message.reply_text(text)
+            text_msg += "*(কোনো সহকারী এডমিন যুক্ত নেই)*"
+        await message.reply_text(text_msg)
 
-    # ৫. /addfsub কমান্ড (এডমিনদের জন্য)
+    # ৫. /addfsub কমান্ড
     elif command == "/addfsub":
         if not await is_admin(user_id):
             return await message.reply_text(f"❌ **আপনি এই বটের এডমিন নন!**\n👤 আপনার আইডি: `{user_id}`")
@@ -320,7 +333,7 @@ async def unified_command_handler(client, message: Message):
         await fsub_col.update_one({"_id": args[0]}, {"$set": {"invite_link": args[1]}}, upsert=True)
         await message.reply_text("FSub চ্যানেল সফলভাবে যুক্ত হয়েছে।")
 
-    # ৬. /delfsub কমান্ড (এডমিনদের জন্য)
+    # ৬. /delfsub কমান্ড
     elif command == "/delfsub":
         if not await is_admin(user_id):
             return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
@@ -329,21 +342,21 @@ async def unified_command_handler(client, message: Message):
         await fsub_col.delete_one({"_id": args[0]})
         await message.reply_text("FSub চ্যানেল বাদ দেওয়া হয়েছে।")
 
-    # ৭. /fsublist কমান্ড (এডমিনদের জন্য)
+    # ৭. /fsublist কমান্ড
     elif command == "/fsublist":
         if not await is_admin(user_id):
             return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন。\n👤 আপনার আইডি: `{user_id}`")
         channels = fsub_col.find({})
-        text = "**FSub চ্যানেল তালিকা:**\n\n"
+        text_msg = "**FSub চ্যানেল তালিকা:**\n\n"
         has_channel = False
         async for ch in channels:
-            text += f"ID: `{ch['_id']}`\nLink: {ch['invite_link']}\n\n"
+            text_msg += f"ID: `{ch['_id']}`\nLink: {ch['invite_link']}\n\n"
             has_channel = True
         if not has_channel:
-            text += "*(কোনো FSub চ্যানেল যুক্ত নেই)*"
-        await message.reply_text(text)
+            text_msg += "*(কোনো FSub চ্যানেল যুক্ত নেই)*"
+        await message.reply_text(text_msg)
 
-    # ৮. /setautodelete কমান্ড (এডমিনদের জন্য)
+    # ৮. /setautodelete কমান্ড
     elif command == "/setautodelete":
         if not await is_admin(user_id):
             return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
@@ -363,7 +376,7 @@ async def unified_command_handler(client, message: Message):
         except ValueError:
             await message.reply_text("দয়া করে সঠিক মিনিট সংখ্যায় লিখুন।")
 
-    # ৯. /delete কমান্ড (এডমিনদের জন্য)
+    # ৯. /delete কমান্ড
     elif command == "/delete":
         if not await is_admin(user_id):
             return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন।\n👤 আপনার আইডি: `{user_id}`")
@@ -376,7 +389,7 @@ async def unified_command_handler(client, message: Message):
         else:
             await message.reply_text("এই ফাইল কী-টি ডাটাবেজে পাওয়া যায়নি।")
 
-    # ১০. /batch কমান্ড (সবার জন্য)
+    # ১০. /batch কমান্ড
     elif command == "/batch":
         await users_col.update_one(
             {"_id": user_id},
@@ -387,7 +400,7 @@ async def unified_command_handler(client, message: Message):
             "📥 **ব্যাচ মোড চালু হয়েছে!**\n\nএখন একে একে আপনার ফাইলগুলো পাঠাতে থাকুন। সব পাঠানো শেষ হলে `/done` লিখে কমান্ড দিন।\n\n*বাতিল করতে চাইলে `/cancel` লিখুন।*"
         )
 
-    # ১১. /cancel কমান্ড (সবার জন্য)
+    # ১১. /cancel কমান্ড
     elif command == "/cancel":
         await users_col.update_one(
             {"_id": user_id},
@@ -395,7 +408,7 @@ async def unified_command_handler(client, message: Message):
         )
         await message.reply_text("ব্যাচ মোড বাতিল করা হয়েছে।")
 
-    # ১২. /done কমান্ড (সবার জন্য)
+    # ১২. /done কমান্ড
     elif command == "/done":
         user_data = await users_col.find_one({"_id": user_id})
         if not user_data or not user_data.get("batch_mode"):
@@ -418,8 +431,8 @@ async def unified_command_handler(client, message: Message):
             {"$unset": {"batch_mode": "", "batch_files": ""}}
         )
         
-        bot_username = (await client.get_me()).username
-        share_link = f"https://t.me/{bot_username}?start={file_key}"
+        bot_info = await client.get_me()
+        share_link = f"https://t.me/{bot_info.username}?start={file_key}"
         
         await message.reply_text(
             f"✅ **আপনার ব্যাচ ফাইলটি সেভ হয়েছে!**\n\n📦 মোট ফাইলের সংখ্যা: `{len(files_list)}` টি\n🔗 **শেয়ার লিংক:**\n`{share_link}`",
@@ -432,11 +445,11 @@ async def unified_command_handler(client, message: Message):
     else:
         await message.reply_text("❌ **দুঃখিত, এই কমান্ডটি বটের জানা নেই।**\nসঠিক কমান্ডগুলো দেখতে মেনু চেক করুন।")
 
-# ================= FILE RECEIVER (Handling Batch & Single) =================
+# ================= FILE RECEIVER =================
 
 @app.on_message((filters.document | filters.video | filters.audio | filters.photo) & filters.private)
 async def handle_incoming_files(client, message: Message):
-    user_id = message.from_user.id
+    user_id = message.from_user.id if message.from_user else message.chat.id
     user_data = await users_col.find_one({"_id": user_id})
 
     file_name = "Unnamed File"
@@ -485,8 +498,8 @@ async def handle_incoming_files(client, message: Message):
         "is_batch": False
     })
     
-    bot_username = (await client.get_me()).username
-    share_link = f"https://t.me/{bot_username}?start={file_key}"
+    bot_info = await client.get_me()
+    share_link = f"https://t.me/{bot_info.username}?start={file_key}"
     
     await message.reply_text(
         f"📥 **ফাইল সেভ হয়েছে!**\n\n📁 **নাম:** `{file_name}`\n⚖️ **সাইজ:** `{get_readable_size(file_size)}`\n\n🔗 **লিংক:**\n`{share_link}`",
@@ -506,7 +519,8 @@ async def run_bot():
 
 if __name__ == "__main__":
     try:
-        loop.run_until_complete(run_bot())
+        # আধুনিক ইভেন্ট লুপ রানার ব্যবহার করা হয়েছে
+        asyncio.run(run_bot())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user.")
     except Exception as e:
