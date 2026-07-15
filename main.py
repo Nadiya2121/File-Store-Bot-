@@ -4,14 +4,21 @@ import types
 import asyncio
 
 # ================= PYTHON 3.12+ / 3.14 PYROGRAM PURE ASYNC PATCH =================
-# এই প্যাচটি Pyrogram-এর ত্রুটিযুক্ত সিঙ্ক র‍্যাপার নিষ্ক্রিয় করে এটিকে পিওর অ্যাসিনক্রোনাস মুডে রান করায়।
-# এর ফলে আধুনিক পাইথন সংস্করণগুলোতে কোনো ইভেন্ট লুপ সংঘর্ষ ছাড়াই বট নির্বিঘ্নে চলবে।
+# ১. মডিউল লেভেলেই একটি স্থায়ী ইভেন্ট লুপ তৈরি এবং সেট করা হচ্ছে
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
+# ২. asyncio.get_event_loop-কে প্যাচ করা হচ্ছে যাতে এটি সবসময় আমাদের এই লুপটি রিটার্ন করে
+asyncio.get_event_loop = lambda: loop
+
+# ৩. Pyrogram-এর ত্রুটিযুক্ত সিঙ্ক র‍্যাপার নিষ্ক্রিয় করার জন্য ডামি মডিউল প্যাচ
 sync_mod = types.ModuleType("pyrogram.sync")
 
 async def dummy_idle():
     import signal
-    loop = asyncio.get_running_loop()
     future = loop.create_future()
     
     def signal_handler():
@@ -344,7 +351,7 @@ async def unified_command_handler(client, message: Message):
             await admins_col.delete_one({"_id": admin_id})
             await message.reply_text("এডমিন সফলভাবে বাদ দেওয়া হয়েছে।")
         except ValueError:
-            await message.reply_text("দয়া করে সঠিক সংখ্যায় আইডি দিন。")
+            await message.reply_text("দয়া করে সঠিক সংখ্যায় আইডি দিন।")
 
     # ৪. /adminlist কমান্ড
     elif command == "/adminlist":
@@ -378,7 +385,7 @@ async def unified_command_handler(client, message: Message):
         await fsub_col.delete_one({"_id": args[0]})
         await message.reply_text("FSub চ্যানেল বাদ দেওয়া হয়েছে।")
 
-    # ७. /fsublist কমান্ড
+    # ৭. /fsublist কমান্ড
     elif command == "/fsublist":
         if not await is_admin(user_id):
             return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন。\n👤 আপনার আইডি: `{user_id}`")
@@ -555,7 +562,8 @@ async def run_bot():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(run_bot())
+        # মডিউল লেভেলের স্ট্যাবল লুপ ব্যবহার করে কোডটি রান করা হচ্ছে
+        loop.run_until_complete(run_bot())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user.")
     except Exception as e:
