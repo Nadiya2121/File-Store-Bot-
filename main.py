@@ -1,10 +1,22 @@
 import os
 import asyncio
+
+# ================= PYTHON 3.12+ / 3.14 PYROGRAM CRASH FIX =================
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# asyncio.get_event_loop-কে মাঙ্কি-প্যাচ করা হচ্ছে যাতে Pyrogram ইমপোর্টের সময় ক্র্যাশ না করে
+asyncio.get_event_loop = lambda: loop
+# ==========================================================================
+
 import random
 import string
 import logging
 import traceback
-import certifi  # ক্লাউড প্ল্যাটফর্মে MongoDB কানেকশন সিকিউর করার জন্য
+import certifi  # ক্লাউড প্ল্যাটফর্মে MongoDB SSL ভেরিফিকেশন ফিক্স করার জন্য
 
 from aiohttp import web
 from pyrogram import Client, filters, idle
@@ -36,7 +48,7 @@ app = Client(
     in_memory=True
 )
 
-# ডেটাবেজ কানেকশনে certifi যুক্ত করা হয়েছে (SSL হ্যান্ডশেক ফিক্স)
+# ডেটাবেজ কানেকশন
 try:
     db_client = AsyncIOMotorClient(MONGO_URL, tlsCAFile=certifi.where())
     db = db_client["PublicBatchStoreDB"]
@@ -55,7 +67,7 @@ settings_col = db["settings"]
 def generate_id():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=8))
 
-# সাইজ রিডেবল করার ফাংশন
+# সাইজ রিডেবল করার ফাংশন (Bytes to MB/GB)
 def get_readable_size(size_in_bytes):
     if not size_in_bytes:
         return "Unknown"
@@ -78,9 +90,8 @@ async def get_autodelete_time():
         return setting.get("time", 0)
     return 0
 
-# আইডি কনভার্ট করার হেল্পার ফাংশন
+# আইডি কনভার্ট করার হেল্পার ফাংশন (FSub আইডি ক্র্যাশ এড়াতে)
 def parse_chat_id(chat_id_str: str):
-    """স্ট্রিং আইডিকে ইন্টিজারে রূপান্তর করে, ইউজারনেম হলে স্ট্রিং-ই রাখে"""
     chat_id_str = chat_id_str.strip()
     if chat_id_str.startswith("-") or chat_id_str.isdigit():
         try:
@@ -89,7 +100,7 @@ def parse_chat_id(chat_id_str: str):
             return chat_id_str
     return chat_id_str
 
-# Message deletion background task
+# মেসেজ ডিলিট করার ব্যাকগ্রাউন্ড টাস্ক
 async def delete_after_delay(chat_id: int, message_ids: list, delay_minutes: int):
     await asyncio.sleep(delay_minutes * 60)
     try:
@@ -109,7 +120,7 @@ async def start_webserver():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logger.info(f"Web server started on port {PORT}")
+    logger.info(f"Web server successfully started on port {PORT}")
 
 # ================= JOIN REQUEST TRACKING =================
 
@@ -137,11 +148,11 @@ async def process_start_command(client, message: Message, args):
         upsert=True
     )
 
-    # সাধারণ স্টার্ট মেসেজ
+    # সাধারণ স্টার্ট মেসেজ (args না থাকলে)
     if not args:
         start_caption = (
             "👋 **হ্যালো! আমি একটি অত্যন্ত দ্রুতগতির আধুনিক ফাইল স্টোর বট।**\n\n"
-            "📂 এখানে আপনি যেকোনো মুভি, সিরিজ বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
+            "📂 এখানে আপনি যেকোনো মুভি, serie বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
             "✨ **ফিচারসমূহ:**\n"
             "• মাল্টি-ফাইল ব্যাচ লিংক সাপোর্ট (`/batch`)\n"
             "• অটো-ডিলিট সিস্টেম প্রটেকশন\n"
@@ -190,7 +201,7 @@ async def process_start_command(client, message: Message, args):
         except UserNotParticipant:
             pass
         except Exception as e:
-            logger.warning(f"Error checking chat member for {ch_id}: {e}")
+            logger.warning(f"FSub access check bypass or error for {ch_id}: {e}")
 
         if not is_accessible:
             req = await requests_col.find_one({"user_id": user_id, "channel_id": ch_id})
@@ -519,7 +530,6 @@ async def run_bot():
 
 if __name__ == "__main__":
     try:
-        # আধুনিক ইভেন্ট লুপ রানার ব্যবহার করা হয়েছে
         asyncio.run(run_bot())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user.")
