@@ -1,6 +1,6 @@
 pyrogram
 tgcrypto
 motor
-pymongo
 dnspython
+certifi
 aiohttp
