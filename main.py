@@ -1,16 +1,41 @@
 import os
+import sys
+import types
 import asyncio
 
-# ================= PYTHON 3.12+ / 3.14 PYROGRAM CRASH FIX =================
-try:
-    loop = asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# ================= PYTHON 3.12+ / 3.14 PYROGRAM PURE ASYNC PATCH =================
+# এই প্যাচটি Pyrogram-এর ত্রুটিযুক্ত সিঙ্ক র‍্যাপার নিষ্ক্রিয় করে এটিকে পিওর অ্যাসিনক্রোনাস মুডে রান করায়।
+# এর ফলে আধুনিক পাইথন সংস্করণগুলোতে কোনো ইভেন্ট লুপ সংঘর্ষ ছাড়াই বট নির্বিঘ্নে চলবে।
 
-# asyncio.get_event_loop-কে মাঙ্কি-প্যাচ করা হচ্ছে যাতে Pyrogram ইমপোর্টের সময় ক্র্যাশ না করে
-asyncio.get_event_loop = lambda: loop
-# ==========================================================================
+sync_mod = types.ModuleType("pyrogram.sync")
+
+async def dummy_idle():
+    import signal
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    
+    def signal_handler():
+        if not future.done():
+            future.set_result(None)
+            
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except NotImplementedError:
+            pass
+    try:
+        await future
+    except asyncio.CancelledError:
+        pass
+
+async def dummy_compose(*args, **kwargs):
+    pass
+
+sync_mod.idle = dummy_idle
+sync_mod.compose = dummy_compose
+
+sys.modules["pyrogram.sync"] = sync_mod
+# =================================================================================
 
 import random
 import string
@@ -67,7 +92,7 @@ settings_col = db["settings"]
 def generate_id():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=8))
 
-# সাইজ রিডেবল করার ফাংশন (Bytes to MB/GB)
+# সাইজ রিডেবল করার ফাংশন
 def get_readable_size(size_in_bytes):
     if not size_in_bytes:
         return "Unknown"
@@ -90,7 +115,7 @@ async def get_autodelete_time():
         return setting.get("time", 0)
     return 0
 
-# আইডি কনভার্ট করার হেল্পার ফাংশন (FSub আইডি ক্র্যাশ এড়াতে)
+# আইডি কনভার্ট করার হেল্পার ফাংশন
 def parse_chat_id(chat_id_str: str):
     chat_id_str = chat_id_str.strip()
     if chat_id_str.startswith("-") or chat_id_str.isdigit():
@@ -148,11 +173,11 @@ async def process_start_command(client, message: Message, args):
         upsert=True
     )
 
-    # সাধারণ স্টার্ট মেসেজ (args না থাকলে)
+    # সাধারণ স্টার্ট মেসেজ
     if not args:
         start_caption = (
             "👋 **হ্যালো! আমি একটি অত্যন্ত দ্রুতগতির আধুনিক ফাইল স্টোর বট।**\n\n"
-            "📂 এখানে আপনি যেকোনো মুভি, serie বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
+            "📂 এখানে আপনি যেকোনো মুভি, সিরিজ বা ফাইল সুরক্ষিতভাবে সংরক্ষণ করতে পারবেন এবং কাস্টম লিংক তৈরি করতে পারবেন।\n\n"
             "✨ **ফিচারসমূহ:**\n"
             "• মাল্টি-ফাইল ব্যাচ লিংক সাপোর্ট (`/batch`)\n"
             "• অটো-ডিলিট সিস্টেম প্রটেকশন\n"
@@ -319,7 +344,7 @@ async def unified_command_handler(client, message: Message):
             await admins_col.delete_one({"_id": admin_id})
             await message.reply_text("এডমিন সফলভাবে বাদ দেওয়া হয়েছে।")
         except ValueError:
-            await message.reply_text("দয়া করে সঠিক সংখ্যায় আইডি দিন।")
+            await message.reply_text("দয়া করে সঠিক সংখ্যায় আইডি দিন。")
 
     # ৪. /adminlist কমান্ড
     elif command == "/adminlist":
@@ -353,7 +378,7 @@ async def unified_command_handler(client, message: Message):
         await fsub_col.delete_one({"_id": args[0]})
         await message.reply_text("FSub চ্যানেল বাদ দেওয়া হয়েছে।")
 
-    # ৭. /fsublist কমান্ড
+    # ७. /fsublist কমান্ড
     elif command == "/fsublist":
         if not await is_admin(user_id):
             return await message.reply_text(f"❌ আপনি এই বটের এডমিন নন。\n👤 আপনার আইডি: `{user_id}`")
@@ -523,7 +548,7 @@ async def handle_incoming_files(client, message: Message):
 
 async def run_bot():
     await app.start()
-    logger.info("Telegram bot started successfully!")
+    logger.info("Telegram bot started successfully in Pure Async Mode!")
     await start_webserver()
     await idle()
     await app.stop()
